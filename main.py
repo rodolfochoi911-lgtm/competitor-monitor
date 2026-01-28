@@ -132,12 +132,12 @@ def main():
     driver = setup_driver()
     
     competitors = [
-        {"name": "SKT Shop", "url": "https://shop.tworld.co.kr/exhibition/submain", "param": None},
+        {"name": "SKT (TWD)", "url": "https://shop.tworld.co.kr/exhibition/submain", "param": None},
         {"name": "SKT Air", "url": "https://sktair-event.com/", "param": None},
-        {"name": "KT M Mobile", "url": "https://www.ktmmobile.com/event/eventBoardList.do", "param": None},
-        {"name": "U+ U Mobile", "url": "https://www.uplusumobile.com/event-benefit/event/ongoing", "param": None},
-        {"name": "LG HelloVision", "url": "https://direct.lghellovision.net/event/viewEventList.do?returnTab=allli", "param": "pageIndex"},
-        {"name": "Skylife", "url": "https://www.skylife.co.kr/event?category=mobile", "param": "page"}
+        {"name": "KTM", "url": "https://www.ktmmobile.com/event/eventBoardList.do", "param": None},
+        {"name": "유모바일", "url": "https://www.uplusumobile.com/event-benefit/event/ongoing", "param": None},
+        {"name": "헬로", "url": "https://direct.lghellovision.net/event/viewEventList.do?returnTab=allli", "param": "pageIndex"},
+        {"name": "스카이라이프", "url": "https://www.skylife.co.kr/event?category=mobile", "param": "page"}
     ]
     
     today_results = {}
@@ -200,3 +200,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
