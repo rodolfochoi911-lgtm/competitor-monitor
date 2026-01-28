@@ -1,0 +1,32 @@
+name: Daily Monitor
+
+on:
+  schedule:
+    - cron: '0 23 * * *' # 한국 시간 오전 8시 (UTC 23시)
+  workflow_dispatch: # 수동 실행 버튼 (테스트용)
+
+permissions:
+  contents: write
+
+jobs:
+  run-crawler:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - name: Install Libs
+        run: pip install -r requirements.txt
+      - name: Run Script
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: python main.py
+      - name: Commit Results
+        run: |
+          git config --global user.name "AutoBot"
+          git config --global user.email "bot@github.com"
+          git add data/ docs/
+          git commit -m "Update Report: $(date +'%Y-%m-%d')" || exit 0
+          git push
