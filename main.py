@@ -1,7 +1,7 @@
 """
 [프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-01-29 (SKT Air 포함 6개 사이트 완전체 + 모든 기능 통합)
+[업데이트] 2026-01-29 (스카이라이프 페이지 파라미터 수정 'p' 반영)
 """
 
 import os
@@ -32,7 +32,6 @@ DATA_DIR = "data"
 DOCS_DIR = "docs"
 REPORT_DIR = "docs/reports"
 
-# 날짜 및 시간 설정
 NOW = datetime.now()
 TODAY_STR = NOW.strftime("%Y-%m-%d")
 TIME_STR = NOW.strftime("%H:%M:%S")
@@ -45,6 +44,8 @@ def setup_driver():
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    # 창 크기를 키워서 PC 버전 로딩 유도 (모바일 레이아웃 방지)
+    chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
     
     service = Service(ChromeDriverManager().install())
@@ -60,20 +61,31 @@ def remove_popups(driver):
     except:
         pass
 
+def scroll_to_bottom(driver):
+    """지연 로딩 콘텐츠 활성화를 위한 스크롤"""
+    try:
+        last_height = driver.execute_script("return document.body.scrollHeight")
+        for _ in range(3):
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(2)
+            new_height = driver.execute_script("return document.body.scrollHeight")
+            if new_height == last_height:
+                break
+            last_height = new_height
+    except:
+        pass
+
 def clean_html(html_source):
-    """HTML 전처리 (광고 태그 및 노이즈 제거)"""
+    """HTML 전처리"""
     soup = BeautifulSoup(html_source, 'html.parser')
     
-    # 1. 불필요 태그 제거
     for tag in soup(['script', 'style', 'meta', 'noscript', 'header', 'footer', 'iframe', 'button', 'input', 'nav', 'aside']):
         tag.decompose()
 
-    # 2. 숨겨진 요소(display:none) 제거
     for hidden in soup.find_all(attrs={"style": True}):
         if "display:none" in hidden["style"].replace(" ", "").lower():
             hidden.decompose()
             
-    # 3. 광고/추적 ID 강제 제거
     trash_ids = ['across_adn_container', 'criteo-tags-div', 'kakao-pixel-id', 'facebook-pixel-id']
     for t_id in trash_ids:
         tag = soup.find(id=t_id)
@@ -83,29 +95,25 @@ def clean_html(html_source):
     return body.prettify() if body else "No Content"
 
 def analyze_changes(old_html, new_html):
-    """변경 사항의 종류를 분석하여 사람 말로 요약"""
+    """변경 사항 요약"""
     soup_old = BeautifulSoup(old_html, 'html.parser')
     soup_new = BeautifulSoup(new_html, 'html.parser')
     
     summary_tags = []
     
-    # 이미지 변경 감지
     imgs_old = set([img.get('src') for img in soup_old.find_all('img') if img.get('src')])
     imgs_new = set([img.get('src') for img in soup_new.find_all('img') if img.get('src')])
     if imgs_old != imgs_new:
         summary_tags.append("🖼️ <b>이미지/배너 변경</b>")
         
-    # 텍스트 변경 감지
     if soup_old.get_text().strip() != soup_new.get_text().strip():
         summary_tags.append("✏️ <b>텍스트(내용) 수정</b>")
         
-    # 링크 변경 감지
     links_old = set([a.get('href') for a in soup_old.find_all('a') if a.get('href')])
     links_new = set([a.get('href') for a in soup_new.find_all('a') if a.get('href')])
     if links_old != links_new:
         summary_tags.append("🔗 <b>연결 링크 변경</b>")
 
-    # 디자인 변경 감지
     if not summary_tags and old_html != new_html:
         summary_tags.append("🎨 <b>디자인/스타일 변경</b>")
         
@@ -114,6 +122,53 @@ def analyze_changes(old_html, new_html):
     
     return " / ".join(summary_tags)
 
+def extract_links_safely(driver, base_url, target_selector):
+    """링크 추출 (Selector 실패 시 전체 검색 Fallback)"""
+    links = []
+    method = "Selector"
+    
+    if target_selector:
+        try:
+            container = WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, target_selector))
+            )
+            found_links = container.find_elements(By.TAG_NAME, "a")
+            if len(found_links) == 0:
+                raise Exception("0 links found in selector")
+            links = found_links
+        except:
+            print(f"    ⚠️ 선택자({target_selector}) 실패/0건 -> 전체 페이지 검색으로 전환")
+            links = driver.find_elements(By.TAG_NAME, "a")
+            method = "Fallback (All)"
+    else:
+        links = driver.find_elements(By.TAG_NAME, "a")
+        method = "Full Page"
+
+    current_page_urls = []
+    extracted_data = {} 
+
+    for link in links:
+        try:
+            href = link.get_attribute('href')
+            title = link.text.strip()
+            if not title:
+                img = link.find_element(By.TAG_NAME, "img")
+                title = img.get_attribute("alt") if img else "제목 없음"
+            
+            if href and ('event' in href or 'view' in href or 'detail' in href or 'notice' in href) and not href.startswith('#') and 'javascript' not in href:
+                if href.startswith('/'):
+                    from urllib.parse import urljoin
+                    href = urljoin(base_url, href)
+                
+                if href not in current_page_urls:
+                    current_page_urls.append(href)
+                    if href not in extracted_data:
+                        extracted_data[href] = title
+        except:
+            continue
+            
+    return extracted_data, method
+
 def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_selector=None):
     print(f"🚀 [{site_name}] 데이터 수집 시작...")
     collected_links = {} 
@@ -121,6 +176,7 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
     page = 1
     
     while True:
+        # URL 생성
         if pagination_param:
             connector = '&' if '?' in base_url else '?'
             target_url = f"{base_url}{connector}{pagination_param}={page}"
@@ -129,55 +185,31 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
             
         try:
             driver.get(target_url)
-            time.sleep(3)
+            time.sleep(5)
             remove_popups(driver)
+            scroll_to_bottom(driver)
             
-            links = []
-            if target_selector:
-                try:
-                    container = WebDriverWait(driver, 5).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, target_selector))
-                    )
-                    links = container.find_elements(By.TAG_NAME, "a")
-                except:
-                    links = driver.find_elements(By.TAG_NAME, "a")
-            else:
-                links = driver.find_elements(By.TAG_NAME, "a")
-
-            current_page_urls = []
+            page_data, method = extract_links_safely(driver, base_url, target_selector)
             
-            for link in links:
-                try:
-                    href = link.get_attribute('href')
-                    # 제목 추출
-                    title = link.text.strip()
-                    if not title:
-                        img = link.find_element(By.TAG_NAME, "img")
-                        title = img.get_attribute("alt") if img else "제목 없음"
-                    
-                    if href and ('event' in href or 'view' in href or 'detail' in href or 'notice' in href) and not href.startswith('#') and 'javascript' not in href:
-                        if href.startswith('/'):
-                            from urllib.parse import urljoin
-                            href = urljoin(base_url, href)
-                        
-                        if href not in current_page_urls:
-                            current_page_urls.append(href)
-                            if href not in collected_links:
-                                collected_links[href] = title
-                except:
-                    continue
+            if page == 1:
+                print(f"  - [{method}] Page {page}: {len(page_data)}개 발견")
             
-            if not current_page_urls: break
-            if sorted(current_page_urls) == sorted(last_page_urls): break
+            if not page_data: break
+            
+            current_urls = sorted(list(page_data.keys()))
+            if current_urls == sorted(last_page_links): 
+                break
+            
+            collected_links.update(page_data)
             
             if not pagination_param: break
             
-            last_page_links = current_page_urls
+            last_page_links = current_urls
             page += 1
             if page > 10: break
 
         except Exception as e:
-            print(f"  ⚠️ 오류: {e}")
+            print(f"  ⚠️ 치명적 오류: {e}")
             break
 
     print(f"  🔎 상세 분석 중 ({len(collected_links)}건)...")
@@ -254,14 +286,14 @@ def update_index_page():
 def main():
     driver = setup_driver()
     
-    # [설정] 6개 사이트 전체 리스트 (SKT Air 포함)
+    # [설정] 스카이라이프 파라미터 'p'로 수정 완료
     competitors = [
         {"name": "SKT 다이렉트", "url": "https://shop.tworld.co.kr/exhibition/submain", "param": None, "selector": "#wrap > div.container > div > div.event-list-wrap > div > ul"},
         {"name": "SKT Air", "url": "https://sktair-event.com/", "param": None, "selector": "#app > div > section.content"},
         {"name": "KTM 모바일", "url": "https://www.ktmmobile.com/event/eventBoardList.do", "param": None, "selector": "#listArea1"},
         {"name": "U+ 유모바일", "url": "https://www.uplusumobile.com/event-benefit/event/ongoing", "param": None, "selector": "#wrap > main > div > section"},
         {"name": "헬로모바일", "url": "https://direct.lghellovision.net/event/viewEventList.do?returnTab=allli&category=USIM", "param": "pageIndex", "selector": "#contentWrap > div.event-list-wrap > section > div.list-wrap > ul"},
-        {"name": "스카이라이프", "url": "https://www.skylife.co.kr/event?category=mobile", "param": "page", "selector": "body > div.pb-50.min-w-\[1248px\] > div.m-auto.max-w-\[1248px\].pt-20 > div > div > div.pt-14 > div > div.grid.grid-cols-3.gap-6.pt-4"}
+        {"name": "스카이라이프", "url": "https://www.skylife.co.kr/event?category=mobile", "param": "p", "selector": "body > div.pb-50.min-w-\[1248px\] > div.m-auto.max-w-\[1248px\].pt-20 > div > div > div.pt-14 > div > div.grid.grid-cols-3.gap-6.pt-4"}
     ]
     
     today_results = {}
@@ -297,23 +329,19 @@ def main():
             curr_data = pages.get(url, {"title": "Unknown", "content": ""})
             prev_data = old_pages.get(url, {"title": "Unknown", "content": ""})
             
-            # 구버전 호환성 체크
             if isinstance(prev_data, str): prev_data = {"title": "Old Data", "content": prev_data}
             if isinstance(curr_data, str): curr_data = {"title": "New Data", "content": curr_data}
 
             title_display = curr_data['title'] if url in pages else prev_data['title']
 
-            # Case 1: NEW
             if url in pages and url not in old_pages:
                 is_changed = True
                 change_html = f"<h3 style='color:green'>[NEW] {title_display} <a href='{url}' target='_blank' style='font-size:0.7em'>🔗링크</a></h3>"
             
-            # Case 2: DELETED
             elif url not in pages and url in old_pages:
                 is_changed = True
                 change_html = f"<h3 style='color:red'>[DELETED] {title_display} <a href='{url}' target='_blank' style='font-size:0.7em'>🔗링크</a></h3>"
             
-            # Case 3: UPDATED
             elif curr_data['content'].replace(" ","") != prev_data['content'].replace(" ",""):
                 is_changed = True
                 change_summary = analyze_changes(prev_data['content'], curr_data['content'])
@@ -341,7 +369,6 @@ def main():
             total_change_count += site_change_count
             company_summary.append(f"{name}({site_change_count})")
 
-    # 전체 리스트 생성
     full_list_html = f"<h1>📂 {TODAY_STR} 전체 수집 목록 ({TIME_STR} 기준)</h1><hr>"
     for name, pages in today_results.items():
         full_list_html += f"<h3>{name} (총 {len(pages)}개)</h3><ul>"
@@ -353,7 +380,6 @@ def main():
     with open(os.path.join(REPORT_DIR, list_filename), "w", encoding="utf-8") as f:
         f.write(full_list_html)
 
-    # 리포트 생성
     summary_text = f"총 {total_change_count}건 업데이트 ({', '.join(company_summary)})" if total_change_count > 0 else "특이사항 없음"
     
     report_header = f"""
