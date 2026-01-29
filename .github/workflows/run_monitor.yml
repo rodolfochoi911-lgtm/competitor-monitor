@@ -2,8 +2,13 @@ name: Daily Monitor
 
 on:
   schedule:
-    - cron: '0 23 * * *' # 한국 시간 오전 8시 (UTC 23시)
-  workflow_dispatch: # 수동 실행 버튼 (테스트용)
+    # 1. 한국 시간 오전 8시 (UTC 23:00)
+    - cron: '0 23 * * *'
+    # 2. 한국 시간 오후 3시 (UTC 06:00)
+    - cron: '0 6 * * *'
+  
+  # 수동 실행 버튼 (테스트용)
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,20 +18,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+      
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
+          
       - name: Install Libs
         run: pip install -r requirements.txt
+        
       - name: Run Script
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: python main.py
+        
       - name: Commit Results
         run: |
           git config --global user.name "AutoBot"
           git config --global user.email "bot@github.com"
           git add data/ docs/
-          git commit -m "Update Report: $(date +'%Y-%m-%d')" || exit 0
+          # 변동사항 없어서 커밋할 게 없으면 에러 안 내고 넘어감 (|| exit 0)
+          git commit -m "Update Report: $(date +'%Y-%m-%d %H:%M:%S')" || exit 0
           git push
