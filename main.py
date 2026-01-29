@@ -1,14 +1,14 @@
 """
 [프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-01-29 (스카이라이프 페이지 파라미터 수정 'p' 반영)
+[업데이트] 2026-01-29 (초 단위 아카이빙 + KST + SKT Air 전체검색)
 """
 
 import os
 import json
 import time
 import glob
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import difflib
 import requests
 from bs4 import BeautifulSoup
@@ -32,9 +32,16 @@ DATA_DIR = "data"
 DOCS_DIR = "docs"
 REPORT_DIR = "docs/reports"
 
-NOW = datetime.now()
-TODAY_STR = NOW.strftime("%Y-%m-%d")
-TIME_STR = NOW.strftime("%H:%M:%S")
+# [중요] 한국 시간(KST) 설정
+KST = timezone(timedelta(hours=9))
+NOW = datetime.now(KST)
+
+# 파일명에 쓸 타임스탬프 (예: 20260129_143005) -> 덮어쓰기 방지
+FILE_TIMESTAMP = NOW.strftime("%Y%m%d_%H%M%S")
+
+# 화면 표시용 문자열 (예: 2026-01-29)
+DISPLAY_DATE = NOW.strftime("%Y-%m-%d")
+DISPLAY_TIME = NOW.strftime("%H:%M:%S")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(REPORT_DIR, exist_ok=True)
@@ -44,7 +51,6 @@ def setup_driver():
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    # 창 크기를 키워서 PC 버전 로딩 유도 (모바일 레이아웃 방지)
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
     
@@ -62,10 +68,10 @@ def remove_popups(driver):
         pass
 
 def scroll_to_bottom(driver):
-    """지연 로딩 콘텐츠 활성화를 위한 스크롤"""
+    """스크롤을 10번 내려서 모든 데이터 로딩 유도"""
     try:
         last_height = driver.execute_script("return document.body.scrollHeight")
-        for _ in range(3):
+        for _ in range(10): 
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(2)
             new_height = driver.execute_script("return document.body.scrollHeight")
@@ -76,7 +82,6 @@ def scroll_to_bottom(driver):
         pass
 
 def clean_html(html_source):
-    """HTML 전처리"""
     soup = BeautifulSoup(html_source, 'html.parser')
     
     for tag in soup(['script', 'style', 'meta', 'noscript', 'header', 'footer', 'iframe', 'button', 'input', 'nav', 'aside']):
@@ -95,7 +100,6 @@ def clean_html(html_source):
     return body.prettify() if body else "No Content"
 
 def analyze_changes(old_html, new_html):
-    """변경 사항 요약"""
     soup_old = BeautifulSoup(old_html, 'html.parser')
     soup_new = BeautifulSoup(new_html, 'html.parser')
     
@@ -123,7 +127,6 @@ def analyze_changes(old_html, new_html):
     return " / ".join(summary_tags)
 
 def extract_links_safely(driver, base_url, target_selector):
-    """링크 추출 (Selector 실패 시 전체 검색 Fallback)"""
     links = []
     method = "Selector"
     
@@ -134,10 +137,13 @@ def extract_links_safely(driver, base_url, target_selector):
             )
             found_links = container.find_elements(By.TAG_NAME, "a")
             if len(found_links) == 0:
-                raise Exception("0 links found in selector")
-            links = found_links
+                print(f"    ⚠️ 선택자({target_selector}) 실패/0건 -> 전체 검색 전환")
+                links = driver.find_elements(By.TAG_NAME, "a")
+                method = "Fallback (All)"
+            else:
+                links = found_links
         except:
-            print(f"    ⚠️ 선택자({target_selector}) 실패/0건 -> 전체 페이지 검색으로 전환")
+            print(f"    ⚠️ 선택자 에러 -> 전체 검색 전환")
             links = driver.find_elements(By.TAG_NAME, "a")
             method = "Fallback (All)"
     else:
@@ -176,7 +182,6 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
     page = 1
     
     while True:
-        # URL 생성
         if pagination_param:
             connector = '&' if '?' in base_url else '?'
             target_url = f"{base_url}{connector}{pagination_param}={page}"
@@ -185,7 +190,7 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
             
         try:
             driver.get(target_url)
-            time.sleep(5)
+            time.sleep(5) 
             remove_popups(driver)
             scroll_to_bottom(driver)
             
@@ -209,7 +214,7 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
             if page > 10: break
 
         except Exception as e:
-            print(f"  ⚠️ 치명적 오류: {e}")
+            print(f"  ⚠️ 오류: {e}")
             break
 
     print(f"  🔎 상세 분석 중 ({len(collected_links)}건)...")
@@ -230,6 +235,7 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
     return site_data
 
 def update_index_page():
+    # 파일명에 시간이 들어가므로, 이름 역순으로 정렬하면 최신 파일이 맨 위로 옴
     report_files = glob.glob(os.path.join(REPORT_DIR, "report_*.html"))
     report_files.sort(reverse=True)
     
@@ -252,8 +258,8 @@ def update_index_page():
         </style>
     </head>
     <body>
-        <h1>📊 경쟁사 프로모션 모니터링 대시보드</h1>
-        <p>최종 업데이트: {TODAY_STR} {TIME_STR}</p>
+        <h1>📊 경쟁사 모니터링 대시보드 (아카이브)</h1>
+        <p>현재 시각: {DISPLAY_DATE} {DISPLAY_TIME} (KST)</p>
         <div class="list-container">
     """
     
@@ -262,18 +268,28 @@ def update_index_page():
     
     for file_path in report_files:
         filename = os.path.basename(file_path)
-        date_str = filename.replace("report_", "").replace(".html", "")
-        list_filename = f"list_{date_str}.html"
-        badge = '<span class="badge">NEW</span>' if date_str == TODAY_STR else ''
+        # 파일명: report_20260129_143000.html
+        # 표시용: 2026-01-29 14:30:00
+        timestamp_part = filename.replace("report_", "").replace(".html", "")
+        try:
+            dt_obj = datetime.strptime(timestamp_part, "%Y%m%d_%H%M%S")
+            display_str = dt_obj.strftime("%Y-%m-%d %H:%M:%S")
+        except:
+            display_str = timestamp_part # 포맷 안 맞으면 그냥 출력
+        
+        list_filename = f"list_{timestamp_part}.html"
+        
+        # 오늘 날짜와 같으면 NEW 뱃지
+        is_today = display_str.startswith(DISPLAY_DATE)
+        badge = '<span class="badge">NEW</span>' if is_today else ''
         
         index_html += f"""
             <div class="card">
                 <div>
-                    <a href="reports/{filename}">📄 {date_str} 리포트 (변경사항)</a>
+                    <a href="reports/{filename}">📄 {display_str} 리포트</a>
                     <a href="reports/{list_filename}" class="sub-link" target="_blank">🗂️ 전체 수집 목록</a>
                     {badge}
                 </div>
-                <span class="date">{date_str}</span>
             </div>
         """
         
@@ -286,14 +302,13 @@ def update_index_page():
 def main():
     driver = setup_driver()
     
-    # [설정] 스카이라이프 파라미터 'p'로 수정 완료
     competitors = [
-        {"name": "SKT 다이렉트", "url": "https://shop.tworld.co.kr/exhibition/submain", "param": None, "selector": "#wrap > div.container > div > div.event-list-wrap > div > ul"},
-        {"name": "SKT Air", "url": "https://sktair-event.com/", "param": None, "selector": "#app > div > section.content"},
-        {"name": "KTM 모바일", "url": "https://www.ktmmobile.com/event/eventBoardList.do", "param": None, "selector": "#listArea1"},
+        {"name": "SKT 다이렉트", "url": "https://shop.tworld.co.kr/exhibition/submain", "param": None, "selector": None},
+        {"name": "SKT Air", "url": "https://sktair-event.com/", "param": None, "selector": None},
+        {"name": "KTM 모바일", "url": "https://www.ktmmobile.com/event/eventBoardList.do", "param": None, "selector": None},
         {"name": "U+ 유모바일", "url": "https://www.uplusumobile.com/event-benefit/event/ongoing", "param": None, "selector": "#wrap > main > div > section"},
-        {"name": "헬로모바일", "url": "https://direct.lghellovision.net/event/viewEventList.do?returnTab=allli&category=USIM", "param": "pageIndex", "selector": "#contentWrap > div.event-list-wrap > section > div.list-wrap > ul"},
-        {"name": "스카이라이프", "url": "https://www.skylife.co.kr/event?category=mobile", "param": "p", "selector": "body > div.pb-50.min-w-\[1248px\] > div.m-auto.max-w-\[1248px\].pt-20 > div > div > div.pt-14 > div > div.grid.grid-cols-3.gap-6.pt-4"}
+        {"name": "헬로모바일", "url": "https://direct.lghellovision.net/event/viewEventList.do?returnTab=allli&category=USIM", "param": "pageIndex", "selector": None},
+        {"name": "스카이라이프", "url": "https://www.skylife.co.kr/event?category=mobile", "param": "p", "selector": None}
     ]
     
     today_results = {}
@@ -369,21 +384,22 @@ def main():
             total_change_count += site_change_count
             company_summary.append(f"{name}({site_change_count})")
 
-    full_list_html = f"<h1>📂 {TODAY_STR} 전체 수집 목록 ({TIME_STR} 기준)</h1><hr>"
+    # [수정] 파일명에 타임스탬프 적용 (덮어쓰기 방지)
+    full_list_html = f"<h1>📂 {DISPLAY_DATE} 전체 수집 목록 ({DISPLAY_TIME} KST)</h1><hr>"
     for name, pages in today_results.items():
         full_list_html += f"<h3>{name} (총 {len(pages)}개)</h3><ul>"
         for url, data in pages.items():
             full_list_html += f"<li><a href='{url}' target='_blank'>{data['title']}</a></li>"
         full_list_html += "</ul><hr>"
     
-    list_filename = f"list_{TODAY_STR}.html"
+    list_filename = f"list_{FILE_TIMESTAMP}.html"
     with open(os.path.join(REPORT_DIR, list_filename), "w", encoding="utf-8") as f:
         f.write(full_list_html)
 
     summary_text = f"총 {total_change_count}건 업데이트 ({', '.join(company_summary)})" if total_change_count > 0 else "특이사항 없음"
     
     report_header = f"""
-    <h1>📅 {TODAY_STR} 리포트 <span style="font-size:0.6em; color:#888;">({TIME_STR} 기준)</span></h1>
+    <h1>📅 {DISPLAY_DATE} 리포트 <span style="font-size:0.6em; color:#888;">({DISPLAY_TIME} KST)</span></h1>
     <div style='background-color:#f4f4f4; padding:15px; border-radius:10px; border:1px solid #ddd;'>
         <h3>📊 {summary_text}</h3>
         <p>
@@ -395,7 +411,8 @@ def main():
     """
     full_report = report_header + (report_body if total_change_count > 0 else "<p>✅ 금일 변동 사항이 없습니다.</p>")
     
-    filename = f"report_{TODAY_STR}.html"
+    # [수정] 파일명 타임스탬프 적용
+    filename = f"report_{FILE_TIMESTAMP}.html"
     with open(os.path.join(REPORT_DIR, filename), "w", encoding="utf-8") as f:
         f.write(full_report)
         
@@ -408,13 +425,14 @@ def main():
     report_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{filename}"
     list_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{list_filename}"
     
+    # [수정] 슬랙 알림에 KST 시간 강조
     if total_change_count > 0:
         payload = {
-            "text": f"📢 *[{TODAY_STR} {TIME_STR}] 경쟁사 동향 보고* \n\n✅ *요약:* {summary_text}\n\n👉 *변경 리포트:* {report_url}\n🗂️ *전체 목록:* {list_url}\n📂 *대시보드 (아카이브):* {dashboard_url}"
+            "text": f"📢 *[KST {DISPLAY_TIME}] 경쟁사 동향 보고* \n\n✅ *요약:* {summary_text}\n\n👉 *변경 리포트:* {report_url}\n🗂️ *전체 목록:* {list_url}\n📂 *대시보드 (아카이브):* {dashboard_url}"
         }
     else:
         payload = {
-            "text": f"📋 *[{TODAY_STR} {TIME_STR}] 경쟁사 동향 보고* \n\n✅ 특이사항 없음\n📂 *대시보드 (아카이브):* {dashboard_url}"
+            "text": f"📋 *[KST {DISPLAY_TIME}] 경쟁사 동향 보고* \n\n✅ 특이사항 없음\n📂 *대시보드 (아카이브):* {dashboard_url}"
         }
         
     if SLACK_WEBHOOK_URL:
