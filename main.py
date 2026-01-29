@@ -1,7 +1,7 @@
 """
 [프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-01-29 (타임스탬프 추가 + 무료 한도 최적화)
+[업데이트] 2026-01-29 (SKT Air 포함 6개 사이트 완전체 + 모든 기능 통합)
 """
 
 import os
@@ -32,10 +32,10 @@ DATA_DIR = "data"
 DOCS_DIR = "docs"
 REPORT_DIR = "docs/reports"
 
-# [수정됨] 날짜뿐만 아니라 시간까지 정확하게 기록
+# 날짜 및 시간 설정
 NOW = datetime.now()
 TODAY_STR = NOW.strftime("%Y-%m-%d")
-TIME_STR = NOW.strftime("%H:%M:%S") # 예: 14:30:05
+TIME_STR = NOW.strftime("%H:%M:%S")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(REPORT_DIR, exist_ok=True)
@@ -61,15 +61,19 @@ def remove_popups(driver):
         pass
 
 def clean_html(html_source):
+    """HTML 전처리 (광고 태그 및 노이즈 제거)"""
     soup = BeautifulSoup(html_source, 'html.parser')
     
+    # 1. 불필요 태그 제거
     for tag in soup(['script', 'style', 'meta', 'noscript', 'header', 'footer', 'iframe', 'button', 'input', 'nav', 'aside']):
         tag.decompose()
 
+    # 2. 숨겨진 요소(display:none) 제거
     for hidden in soup.find_all(attrs={"style": True}):
         if "display:none" in hidden["style"].replace(" ", "").lower():
             hidden.decompose()
             
+    # 3. 광고/추적 ID 강제 제거
     trash_ids = ['across_adn_container', 'criteo-tags-div', 'kakao-pixel-id', 'facebook-pixel-id']
     for t_id in trash_ids:
         tag = soup.find(id=t_id)
@@ -78,9 +82,41 @@ def clean_html(html_source):
     body = soup.find('body')
     return body.prettify() if body else "No Content"
 
+def analyze_changes(old_html, new_html):
+    """변경 사항의 종류를 분석하여 사람 말로 요약"""
+    soup_old = BeautifulSoup(old_html, 'html.parser')
+    soup_new = BeautifulSoup(new_html, 'html.parser')
+    
+    summary_tags = []
+    
+    # 이미지 변경 감지
+    imgs_old = set([img.get('src') for img in soup_old.find_all('img') if img.get('src')])
+    imgs_new = set([img.get('src') for img in soup_new.find_all('img') if img.get('src')])
+    if imgs_old != imgs_new:
+        summary_tags.append("🖼️ <b>이미지/배너 변경</b>")
+        
+    # 텍스트 변경 감지
+    if soup_old.get_text().strip() != soup_new.get_text().strip():
+        summary_tags.append("✏️ <b>텍스트(내용) 수정</b>")
+        
+    # 링크 변경 감지
+    links_old = set([a.get('href') for a in soup_old.find_all('a') if a.get('href')])
+    links_new = set([a.get('href') for a in soup_new.find_all('a') if a.get('href')])
+    if links_old != links_new:
+        summary_tags.append("🔗 <b>연결 링크 변경</b>")
+
+    # 디자인 변경 감지
+    if not summary_tags and old_html != new_html:
+        summary_tags.append("🎨 <b>디자인/스타일 변경</b>")
+        
+    if not summary_tags:
+        return "🔍 미세한 코드 변경"
+    
+    return " / ".join(summary_tags)
+
 def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_selector=None):
     print(f"🚀 [{site_name}] 데이터 수집 시작...")
-    collected_links = []
+    collected_links = {} 
     last_page_links = []
     page = 1
     
@@ -96,6 +132,7 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
             time.sleep(3)
             remove_popups(driver)
             
+            links = []
             if target_selector:
                 try:
                     container = WebDriverWait(driver, 5).until(
@@ -107,31 +144,35 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
             else:
                 links = driver.find_elements(By.TAG_NAME, "a")
 
-            current_page_links = []
+            current_page_urls = []
             
             for link in links:
                 try:
                     href = link.get_attribute('href')
+                    # 제목 추출
+                    title = link.text.strip()
+                    if not title:
+                        img = link.find_element(By.TAG_NAME, "img")
+                        title = img.get_attribute("alt") if img else "제목 없음"
+                    
                     if href and ('event' in href or 'view' in href or 'detail' in href or 'notice' in href) and not href.startswith('#') and 'javascript' not in href:
                         if href.startswith('/'):
                             from urllib.parse import urljoin
                             href = urljoin(base_url, href)
                         
-                        if href not in current_page_links:
-                            current_page_links.append(href)
+                        if href not in current_page_urls:
+                            current_page_urls.append(href)
+                            if href not in collected_links:
+                                collected_links[href] = title
                 except:
                     continue
             
-            if not current_page_links: break
-            if sorted(current_page_links) == sorted(last_page_links): break
-
-            for lnk in current_page_links:
-                if lnk not in collected_links:
-                    collected_links.append(lnk)
-
+            if not current_page_urls: break
+            if sorted(current_page_urls) == sorted(last_page_urls): break
+            
             if not pagination_param: break
             
-            last_page_links = current_page_links
+            last_page_links = current_page_urls
             page += 1
             if page > 10: break
 
@@ -142,12 +183,15 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
     print(f"  🔎 상세 분석 중 ({len(collected_links)}건)...")
     site_data = {}
     
-    for link in collected_links:
+    for link, title in collected_links.items():
         try:
             driver.get(link)
             time.sleep(1)
             remove_popups(driver)
-            site_data[link] = clean_html(driver.page_source)
+            site_data[link] = {
+                "title": title if title else "제목 없음",
+                "content": clean_html(driver.page_source)
+            }
         except:
             pass
             
@@ -172,10 +216,11 @@ def update_index_page():
             .card a:hover {{ text-decoration: underline; }}
             .date {{ color: #666; font-size: 0.9em; }}
             .badge {{ background-color: #28a745; color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; }}
+            .sub-link {{ font-size: 0.8em; color: #888; margin-left: 10px; }}
         </style>
     </head>
     <body>
-        <h1>📊 경쟁사 프로모션 모니터링 이력</h1>
+        <h1>📊 경쟁사 프로모션 모니터링 대시보드</h1>
         <p>최종 업데이트: {TODAY_STR} {TIME_STR}</p>
         <div class="list-container">
     """
@@ -186,24 +231,21 @@ def update_index_page():
     for file_path in report_files:
         filename = os.path.basename(file_path)
         date_str = filename.replace("report_", "").replace(".html", "")
-        
+        list_filename = f"list_{date_str}.html"
         badge = '<span class="badge">NEW</span>' if date_str == TODAY_STR else ''
         
         index_html += f"""
             <div class="card">
                 <div>
-                    <a href="reports/{filename}">📄 {date_str} 리포트</a>
+                    <a href="reports/{filename}">📄 {date_str} 리포트 (변경사항)</a>
+                    <a href="reports/{list_filename}" class="sub-link" target="_blank">🗂️ 전체 수집 목록</a>
                     {badge}
                 </div>
                 <span class="date">{date_str}</span>
             </div>
         """
         
-    index_html += """
-        </div>
-    </body>
-    </html>
-    """
+    index_html += "</div></body></html>"
     
     with open(os.path.join(DOCS_DIR, "index.html"), "w", encoding="utf-8") as f:
         f.write(index_html)
@@ -212,8 +254,10 @@ def update_index_page():
 def main():
     driver = setup_driver()
     
+    # [설정] 6개 사이트 전체 리스트 (SKT Air 포함)
     competitors = [
         {"name": "SKT 다이렉트", "url": "https://shop.tworld.co.kr/exhibition/submain", "param": None, "selector": "#wrap > div.container > div > div.event-list-wrap > div > ul"},
+        {"name": "SKT Air", "url": "https://sktair-event.com/", "param": None, "selector": "#app > div > section.content"},
         {"name": "KTM 모바일", "url": "https://www.ktmmobile.com/event/eventBoardList.do", "param": None, "selector": "#listArea1"},
         {"name": "U+ 유모바일", "url": "https://www.uplusumobile.com/event-benefit/event/ongoing", "param": None, "selector": "#wrap > main > div > section"},
         {"name": "헬로모바일", "url": "https://direct.lghellovision.net/event/viewEventList.do?returnTab=allli&category=USIM", "param": "pageIndex", "selector": "#contentWrap > div.event-list-wrap > section > div.list-wrap > ul"},
@@ -243,21 +287,50 @@ def main():
         site_changes = ""
         site_change_count = 0 
         old_pages = yesterday_results.get(name, {})
+        
         all_urls = set(pages.keys()) | set(old_pages.keys())
         
         for url in all_urls:
             is_changed = False
             change_html = ""
+            
+            curr_data = pages.get(url, {"title": "Unknown", "content": ""})
+            prev_data = old_pages.get(url, {"title": "Unknown", "content": ""})
+            
+            # 구버전 호환성 체크
+            if isinstance(prev_data, str): prev_data = {"title": "Old Data", "content": prev_data}
+            if isinstance(curr_data, str): curr_data = {"title": "New Data", "content": curr_data}
+
+            title_display = curr_data['title'] if url in pages else prev_data['title']
+
+            # Case 1: NEW
             if url in pages and url not in old_pages:
                 is_changed = True
-                change_html = f"<h3 style='color:green'>[NEW] <a href='{url}' target='_blank'>새 이벤트</a></h3><br>"
+                change_html = f"<h3 style='color:green'>[NEW] {title_display} <a href='{url}' target='_blank' style='font-size:0.7em'>🔗링크</a></h3>"
+            
+            # Case 2: DELETED
             elif url not in pages and url in old_pages:
                 is_changed = True
-                change_html = f"<h3 style='color:red'>[DELETED] <a href='{url}' target='_blank'>종료됨</a></h3><br>"
-            elif pages[url].replace(" ","") != old_pages[url].replace(" ",""):
+                change_html = f"<h3 style='color:red'>[DELETED] {title_display} <a href='{url}' target='_blank' style='font-size:0.7em'>🔗링크</a></h3>"
+            
+            # Case 3: UPDATED
+            elif curr_data['content'].replace(" ","") != prev_data['content'].replace(" ",""):
                 is_changed = True
-                diff = difflib.HtmlDiff().make_table(old_pages[url].splitlines(), pages[url].splitlines(), context=True, numlines=3)
-                change_html = f"<h3 style='color:orange'>[UPDATED] <a href='{url}' target='_blank'>내용 변경</a></h3>{diff}<br>"
+                change_summary = analyze_changes(prev_data['content'], curr_data['content'])
+                diff = difflib.HtmlDiff().make_table(prev_data['content'].splitlines(), curr_data['content'].splitlines(), context=True, numlines=3)
+                
+                change_html = f"""
+                <div style="border:1px solid #ddd; padding:10px; border-radius:8px; margin-bottom:10px; background-color:#fff;">
+                    <h3 style='margin:0 0 5px 0; color:orange;'>[UPDATED] {title_display}</h3>
+                    <div style="font-size:0.9em; color:#666; margin-bottom:10px;">
+                        {change_summary} <a href='{url}' target='_blank' style='text-decoration:none;'>🔗 바로가기</a>
+                    </div>
+                    <details>
+                        <summary style="cursor:pointer; color:#0056b3; font-weight:bold; padding:8px; background:#f8f9fa; border-radius:5px;">👉 변경된 코드 상세 보기 (클릭)</summary>
+                        <div style="margin-top:10px; overflow-x:auto; font-size:0.85em;">{diff}</div>
+                    </details>
+                </div>
+                """
             
             if is_changed:
                 site_changes += change_html
@@ -268,14 +341,29 @@ def main():
             total_change_count += site_change_count
             company_summary.append(f"{name}({site_change_count})")
 
+    # 전체 리스트 생성
+    full_list_html = f"<h1>📂 {TODAY_STR} 전체 수집 목록 ({TIME_STR} 기준)</h1><hr>"
+    for name, pages in today_results.items():
+        full_list_html += f"<h3>{name} (총 {len(pages)}개)</h3><ul>"
+        for url, data in pages.items():
+            full_list_html += f"<li><a href='{url}' target='_blank'>{data['title']}</a></li>"
+        full_list_html += "</ul><hr>"
+    
+    list_filename = f"list_{TODAY_STR}.html"
+    with open(os.path.join(REPORT_DIR, list_filename), "w", encoding="utf-8") as f:
+        f.write(full_list_html)
+
+    # 리포트 생성
     summary_text = f"총 {total_change_count}건 업데이트 ({', '.join(company_summary)})" if total_change_count > 0 else "특이사항 없음"
     
-    # [수정됨] 리포트 제목에 정확한 생성 시간(시:분:초) 포함
     report_header = f"""
     <h1>📅 {TODAY_STR} 리포트 <span style="font-size:0.6em; color:#888;">({TIME_STR} 기준)</span></h1>
     <div style='background-color:#f4f4f4; padding:15px; border-radius:10px; border:1px solid #ddd;'>
         <h3>📊 {summary_text}</h3>
-        <p><a href="../index.html">🔙 전체 이력 목록으로 돌아가기</a></p>
+        <p>
+            <a href="../index.html">🔙 대시보드</a> | 
+            <a href="{list_filename}" target="_blank">🗂️ 전체 수집 목록 보기</a>
+        </p>
     </div>
     <hr>
     """
@@ -292,14 +380,15 @@ def main():
 
     dashboard_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/"
     report_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{filename}"
+    list_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{list_filename}"
     
     if total_change_count > 0:
         payload = {
-            "text": f"📢 *[{TODAY_STR} {TIME_STR}] 경쟁사 동향 보고* \n\n✅ *요약:* {summary_text}\n👉 *오늘 리포트:* {report_url}\n📂 *전체 이력:* {dashboard_url}"
+            "text": f"📢 *[{TODAY_STR} {TIME_STR}] 경쟁사 동향 보고* \n\n✅ *요약:* {summary_text}\n\n👉 *변경 리포트:* {report_url}\n🗂️ *전체 목록:* {list_url}\n📂 *대시보드 (아카이브):* {dashboard_url}"
         }
     else:
         payload = {
-            "text": f"📋 *[{TODAY_STR} {TIME_STR}] 경쟁사 동향 보고* \n\n✅ 특이사항 없음\n📂 *전체 이력:* {dashboard_url}"
+            "text": f"📋 *[{TODAY_STR} {TIME_STR}] 경쟁사 동향 보고* \n\n✅ 특이사항 없음\n📂 *대시보드 (아카이브):* {dashboard_url}"
         }
         
     if SLACK_WEBHOOK_URL:
