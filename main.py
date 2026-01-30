@@ -1,7 +1,7 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V27)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V32)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-01-30 (문법 오류 긴급 수정 / 리포트 생성 로직 안정화)
+[업데이트] 2026-01-30 (성공한 4곳 로직 동결 / 문제 3곳만 JS 해독 / 슬랙 디버깅 강화)
 """
 
 import os
@@ -107,7 +107,11 @@ def analyze_content_changes(old_html, new_html):
         summary.append("🖼️ 상세이미지 교체")
     return " / ".join(summary) if summary else "🎨 디자인/레이아웃 변경"
 
-# [그룹 A] V16 오리지널 로직 (SKT, 유모바일, 스카이라이프)
+# =========================================================
+# [그룹 A] 절대 보존 구역 (Legacy Logic)
+# 대상: SKT 다이렉트, 유모바일, 스카이라이프
+# * V16 시절 코드를 그대로 사용함 *
+# =========================================================
 def extract_legacy_simple(driver, container_selector, site_name):
     cards_data = {} 
     try:
@@ -155,7 +159,10 @@ def extract_legacy_simple(driver, container_selector, site_name):
         print(f"    ⚠️ [Legacy] 추출 실패 ({site_name}): {e}")
         return {}
 
-# [그룹 B] JS 해독 로직 (헬로모바일, 7모바일, KTM)
+# =========================================================
+# [그룹 B] 문제 해결 구역 (JS 해독 Logic)
+# 대상: 헬로모바일, SK 7모바일, KTM
+# =========================================================
 def extract_special_js(driver, container_selector, site_name):
     cards_data = {} 
     try:
@@ -164,10 +171,9 @@ def extract_special_js(driver, container_selector, site_name):
         )
         
         items = []
+        # 사이트별 아이템 컨테이너 찾기
         if "헬로모바일" in site_name:
-            try: 
-                list_ul = container.find_element(By.CSS_SELECTOR, ".event-list")
-                items = list_ul.find_elements(By.TAG_NAME, "li")
+            try: items = container.find_element(By.CSS_SELECTOR, ".event-list").find_elements(By.TAG_NAME, "li")
             except: items = container.find_elements(By.TAG_NAME, "li")
             
         elif "SK 7세븐모바일" in site_name:
@@ -176,7 +182,7 @@ def extract_special_js(driver, container_selector, site_name):
                 for g in groups: items.extend(g.find_elements(By.TAG_NAME, "li"))
             except: items = container.find_elements(By.TAG_NAME, "li")
             
-        else: # KTM
+        elif "KTM 모바일" in site_name:
             items = container.find_elements(By.TAG_NAME, "li")
 
         print(f"    [Special] Found {len(items)} items in {site_name}")
@@ -192,18 +198,27 @@ def extract_special_js(driver, container_selector, site_name):
                 onclick = str(link_el.get_attribute('onclick'))
                 
                 final_url = ""
+                
+                # 1. 헬로모바일 해독
                 if "헬로모바일" in site_name and "fncEventDetail" in onclick:
-                    if m := re.search(r"fncEventDetail\((\d+)", onclick):
+                    if m := re.search(r"(\d+)", onclick):
                         final_url = f"https://direct.lghellovision.net/event/viewEventDetail.do?idxOfEvent={m.group(1)}"
                 
+                # 2. SK 7모바일 해독
                 elif "SK 7세븐모바일" in site_name and "fnSearchView" in onclick:
-                    if m := re.search(r"fnSearchView\('([^']+)'", onclick):
+                    if m := re.search(r"['\"]([^'\"]+)['\"]", onclick):
                         final_url = f"https://www.sk7mobile.com/bnef/event/eventIngView.do?cntId={m.group(1)}"
                 
-                elif href and "javascript" not in href:
-                    final_url = href
-                elif href: 
-                    final_url = href
+                # 3. KTM 모바일 해독
+                elif "KTM 모바일" in site_name:
+                    if href and "javascript" not in href: final_url = href
+                    elif m := re.search(r"(\d+)", onclick):
+                        final_url = f"https://www.ktmmobile.com/event/eventBoardView.do?seq={m.group(1)}"
+                
+                # 4. Fallback
+                if not final_url:
+                    if href and "javascript" not in href: final_url = href
+                    elif href: final_url = href
 
                 if not final_url: continue
 
@@ -251,6 +266,7 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
         remove_popups(driver)
         scroll_to_bottom(driver)
         
+        # [핵심] 그룹별 함수 분기 (잘 되는 놈 vs 고칠 놈)
         if site_name in ["SKT 다이렉트", "U+ 유모바일", "스카이라이프"]:
             page_data = extract_legacy_simple(driver, target_selector, site_name)
         else:
@@ -288,13 +304,22 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
 
 def main():
     try:
+        # [디버깅] 슬랙 키 확인 (시작하자마자 체크)
+        if SLACK_WEBHOOK_URL:
+            print(f"🔑 슬랙 Webhook URL 감지됨 (길이: {len(SLACK_WEBHOOK_URL)})")
+        else:
+            print("⚠️ [경고] SLACK_WEBHOOK_URL 환경변수가 없습니다!")
+
         driver = setup_driver()
         
         competitors = [
+            # [그룹 A: 절대 보존]
             {"name": "SKT 다이렉트", "url": "https://shop.tworld.co.kr/exhibition/submain", "param": None, "selector": "#wrap > div.container > div > div.event-list-wrap > div > ul"},
             {"name": "SKT Air", "url": "https://sktair-event.com/", "param": None, "selector": "#app > div > section.content"},
             {"name": "U+ 유모바일", "url": "https://www.uplusumobile.com/event-benefit/event/ongoing", "param": None, "selector": "#wrap > main > div > section"},
             {"name": "스카이라이프", "url": "https://www.skylife.co.kr/event?category=mobile", "param": "p", "selector": "body > div.pb-50.min-w-\[1248px\] > div.m-auto.max-w-\[1248px\].pt-20 > div > div > div.pt-14 > div > div.grid.grid-cols-3.gap-6.pt-4"},
+            
+            # [그룹 B: JS 해독]
             {"name": "헬로모바일", "url": "https://direct.lghellovision.net/event/viewEventList.do?returnTab=allli", "param": "#", "selector": ".event-list-wrap"},
             {"name": "SK 7세븐모바일", "url": "https://www.sk7mobile.com/bnef/event/eventIngList.do", "param": None, "selector": ".tb-list.bbs-card"},
             {"name": "KTM 모바일", "url": "https://www.ktmmobile.com/event/eventBoardList.do", "param": None, "selector": "#listArea1"}
@@ -309,89 +334,97 @@ def main():
         
         driver.quit()
         
+        # 데이터 저장
         data_filename = f"data_{FILE_TIMESTAMP}.json"
         with open(os.path.join(DATA_DIR, data_filename), "w", encoding="utf-8") as f:
             json.dump(today_results, f, ensure_ascii=False)
             
-        print("✅ 완료 & 리포트 생성")
-        generate_report(today_results)
+        print("✅ 완료. 리포트 작성 중...")
+
+        # -----------------------------------------------------------
+        # [슬랙 전송 및 리포트 로직 (main 함수 내 직렬 연결)]
+        # -----------------------------------------------------------
+        yesterday_results = load_previous_data()
+        report_body = ""
+        total_change_count = 0
+        company_summary = []
+        
+        for name, pages in today_results.items():
+            site_changes = ""
+            site_change_count = 0 
+            old_pages = yesterday_results.get(name, {})
+            all_urls = set(pages.keys()) | set(old_pages.keys())
+            
+            for url in all_urls:
+                is_changed = False; change_type = ""; reason = ""
+                curr = pages.get(url, {"title": "?", "img": "", "content": ""})
+                prev = old_pages.get(url, {"title": "?", "img": "", "content": ""})
+                
+                if url in pages and url not in old_pages:
+                    is_changed = True; change_type = "NEW"; reason = "신규"
+                elif url not in pages and url in old_pages:
+                    is_changed = True; change_type = "DELETED"; reason = "종료"
+                elif curr['content'].replace(" ","") != prev['content'].replace(" ",""):
+                    is_changed = True; change_type = "UPDATED"; reason = analyze_content_changes(prev['content'], curr['content'])
+
+                if is_changed:
+                    color = "green" if change_type == "NEW" else "red" if change_type == "DELETED" else "orange"
+                    img_html = f"<img src='{curr['img']}' style='height:50px; vertical-align:middle; margin-right:10px;'>" if curr['img'] else ""
+                    
+                    site_changes += f"""
+                    <div style="border-left: 5px solid {color}; padding: 10px; margin-bottom: 10px; background: #fff;">
+                        <h3 style="margin: 0 0 5px 0;"><span style="color:{color};">[{change_type}]</span> {curr['title']}</h3>
+                        <div style="display:flex; align-items:center;">
+                            {img_html}
+                            <div style="font-size: 0.9em; color: #555;">
+                                <b>변경 사유:</b> {reason}<br>
+                                <a href="{url}" target="_blank">🔗 바로가기</a>
+                            </div>
+                        </div>
+                    </div>
+                    """
+                    site_change_count += 1
+            
+            if site_changes:
+                report_body += f"<h2>{name} ({site_change_count}건)</h2>{site_changes}<hr>"
+                total_change_count += site_change_count
+                company_summary.append(f"{name}({site_change_count})")
+
+        summary_text = f"총 {total_change_count}건 업데이트 ({', '.join(company_summary)})" if total_change_count > 0 else "특이사항 없음"
+        
+        report_header = f"""
+        <h1>📅 {DISPLAY_DATE} 리포트 <span style='font-size:0.6em; color:#888;'>({DISPLAY_TIME} KST)</span></h1>
+        <div style='background-color:#f4f4f4; padding:15px;'><h3>📊 {summary_text}</h3></div>
+        <hr>
+        """
+        
+        full_report = report_header + (report_body if total_change_count > 0 else "<p>✅ 금일 변동 사항이 없습니다.</p>")
+        
+        filename = f"report_{FILE_TIMESTAMP}.html"
+        with open(os.path.join(REPORT_DIR, filename), "w", encoding="utf-8") as f: f.write(full_report)
+        update_index_page()
+        
+        dashboard_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/"
+        report_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{filename}"
+        
+        # [슬랙 전송 - 무조건 실행]
+        payload = {"text": f"📢 *[KST {DISPLAY_TIME}] 경쟁사 동향 보고* \n\n✅ *요약:* {summary_text}\n\n👉 *변경 리포트:* {report_url}\n📂 *대시보드:* {dashboard_url}"}
+        
+        if SLACK_WEBHOOK_URL:
+            print("📨 슬랙 전송 시도...")
+            try:
+                res = requests.post(SLACK_WEBHOOK_URL, json=payload)
+                if res.status_code == 200:
+                    print("✅ 슬랙 전송 성공!")
+                else:
+                    print(f"❌ 슬랙 전송 실패 (Status: {res.status_code}): {res.text}")
+            except Exception as e:
+                print(f"❌ 슬랙 전송 에러: {e}")
+        else:
+            print("⚠️ SLACK_WEBHOOK_URL이 설정되지 않아 메시지를 보낼 수 없습니다.")
 
     except Exception as e:
         print(f"🔥 Critical Error: {traceback.format_exc()}")
-
-def generate_report(today_results):
-    yesterday_results = load_previous_data()
-    report_body = ""
-    total_change_count = 0
-    company_summary = []
-    
-    for name, pages in today_results.items():
-        site_changes = ""
-        site_change_count = 0 
-        old_pages = yesterday_results.get(name, {})
-        all_urls = set(pages.keys()) | set(old_pages.keys())
-        
-        for url in all_urls:
-            is_changed = False; change_type = ""; reason = ""
-            curr = pages.get(url, {"title": "?", "img": "", "content": ""})
-            prev = old_pages.get(url, {"title": "?", "img": "", "content": ""})
-            
-            if url in pages and url not in old_pages:
-                is_changed = True; change_type = "NEW"; reason = "신규"
-            elif url not in pages and url in old_pages:
-                is_changed = True; change_type = "DELETED"; reason = "종료"
-            elif curr['content'].replace(" ","") != prev['content'].replace(" ",""):
-                is_changed = True; change_type = "UPDATED"; reason = analyze_content_changes(prev['content'], curr['content'])
-
-            if is_changed:
-                color = "green" if change_type == "NEW" else "red" if change_type == "DELETED" else "orange"
-                img_html = f"<img src='{curr['img']}' style='height:50px; vertical-align:middle; margin-right:10px;'>" if curr['img'] else ""
-                
-                # [수정] f-string 안전하게 처리 (문법 에러 방지)
-                site_changes += f"""
-                <div style="border-left: 5px solid {color}; padding: 10px; margin-bottom: 10px; background: #fff;">
-                    <h3 style="margin: 0 0 5px 0;"><span style="color:{color};">[{change_type}]</span> {curr['title']}</h3>
-                    <div style="display:flex; align-items:center;">
-                        {img_html}
-                        <div style="font-size: 0.9em; color: #555;">
-                            <b>변경 사유:</b> {reason}<br>
-                            <a href="{url}" target="_blank">🔗 바로가기</a>
-                        </div>
-                    </div>
-                </div>
-                """
-                site_change_count += 1
-        
-        if site_changes:
-            # [수정] f-string 줄바꿈 안전하게 처리
-            report_body += f"""
-            <h2>{name} ({site_change_count}건)</h2>
-            {site_changes}
-            <hr>
-            """
-            total_change_count += site_change_count
-            company_summary.append(f"{name}({site_change_count})")
-
-    summary_text = f"총 {total_change_count}건 업데이트 ({', '.join(company_summary)})" if total_change_count > 0 else "특이사항 없음"
-    
-    # [수정] HTML 생성부 안전하게 처리
-    report_header = f"""
-    <h1>📅 {DISPLAY_DATE} 리포트 <span style='font-size:0.6em; color:#888;'>({DISPLAY_TIME} KST)</span></h1>
-    <div style='background-color:#f4f4f4; padding:15px;'><h3>📊 {summary_text}</h3></div>
-    <hr>
-    """
-    
-    full_report = report_header + (report_body if total_change_count > 0 else "<p>✅ 금일 변동 사항이 없습니다.</p>")
-    
-    filename = f"report_{FILE_TIMESTAMP}.html"
-    with open(os.path.join(REPORT_DIR, filename), "w", encoding="utf-8") as f: f.write(full_report)
-    update_index_page()
-    
-    dashboard_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/"
-    report_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{filename}"
-    
-    payload = {"text": f"📢 *[KST {DISPLAY_TIME}] 경쟁사 동향 보고* \n\n✅ *요약:* {summary_text}\n\n👉 *변경 리포트:* {report_url}\n📂 *대시보드:* {dashboard_url}"}
-    if SLACK_WEBHOOK_URL: requests.post(SLACK_WEBHOOK_URL, json=payload)
 
 if __name__ == "__main__":
     main()
