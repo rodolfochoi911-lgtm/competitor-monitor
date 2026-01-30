@@ -1,7 +1,7 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V26)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V27)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-01-30 (문법 오류 수정 / 유모바일 V16 원복 / 전수조사)
+[업데이트] 2026-01-30 (문법 오류 긴급 수정 / 리포트 생성 로직 안정화)
 """
 
 import os
@@ -66,7 +66,7 @@ def remove_popups(driver):
 def scroll_to_bottom(driver):
     try:
         last_height = driver.execute_script("return document.body.scrollHeight")
-        for _ in range(5): # 충분히 스크롤
+        for _ in range(5): 
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(1)
             new_height = driver.execute_script("return document.body.scrollHeight")
@@ -107,10 +107,7 @@ def analyze_content_changes(old_html, new_html):
         summary.append("🖼️ 상세이미지 교체")
     return " / ".join(summary) if summary else "🎨 디자인/레이아웃 변경"
 
-# =========================================================
-# [그룹 A] 기존 성공 멤버 전용 (V16 오리지널 로직)
-# 대상: SKT 다이렉트, 유모바일, 스카이라이프
-# =========================================================
+# [그룹 A] V16 오리지널 로직 (SKT, 유모바일, 스카이라이프)
 def extract_legacy_simple(driver, container_selector, site_name):
     cards_data = {} 
     try:
@@ -122,10 +119,8 @@ def extract_legacy_simple(driver, container_selector, site_name):
         if "유모바일" in site_name:
             items = container.find_elements(By.XPATH, ".//li | .//div[contains(@class, 'card')]")
             if not items: items = container.find_elements(By.TAG_NAME, "li")
-        
         elif "SKT 다이렉트" in site_name:
             items = container.find_elements(By.TAG_NAME, "li")
-            
         elif "스카이라이프" in site_name:
             items = container.find_elements(By.XPATH, "./div")
 
@@ -133,7 +128,6 @@ def extract_legacy_simple(driver, container_selector, site_name):
 
         for item in items:
             try:
-                # 링크 찾기
                 try: link_el = item.find_element(By.TAG_NAME, "a")
                 except: 
                     if item.tag_name == 'a': link_el = item
@@ -161,10 +155,7 @@ def extract_legacy_simple(driver, container_selector, site_name):
         print(f"    ⚠️ [Legacy] 추출 실패 ({site_name}): {e}")
         return {}
 
-# =========================================================
-# [그룹 B] 문제아 3인방 전용 (JS 해독 + 신규 로직)
-# 대상: 헬로모바일, SK 7모바일, KTM
-# =========================================================
+# [그룹 B] JS 해독 로직 (헬로모바일, 7모바일, KTM)
 def extract_special_js(driver, container_selector, site_name):
     cards_data = {} 
     try:
@@ -173,7 +164,6 @@ def extract_special_js(driver, container_selector, site_name):
         )
         
         items = []
-        # 사이트별 아이템 찾기
         if "헬로모바일" in site_name:
             try: 
                 list_ul = container.find_element(By.CSS_SELECTOR, ".event-list")
@@ -182,10 +172,8 @@ def extract_special_js(driver, container_selector, site_name):
             
         elif "SK 7세븐모바일" in site_name:
             try: 
-                # event-group 안의 li들 수집
                 groups = container.find_elements(By.CSS_SELECTOR, ".event-group")
-                for g in groups:
-                    items.extend(g.find_elements(By.TAG_NAME, "li"))
+                for g in groups: items.extend(g.find_elements(By.TAG_NAME, "li"))
             except: items = container.find_elements(By.TAG_NAME, "li")
             
         else: # KTM
@@ -204,20 +192,17 @@ def extract_special_js(driver, container_selector, site_name):
                 onclick = str(link_el.get_attribute('onclick'))
                 
                 final_url = ""
-                # 해독 로직
                 if "헬로모바일" in site_name and "fncEventDetail" in onclick:
-                    match = re.search(r"fncEventDetail\((\d+)", onclick)
-                    if match:
-                        final_url = f"https://direct.lghellovision.net/event/viewEventDetail.do?idxOfEvent={match.group(1)}"
+                    if m := re.search(r"fncEventDetail\((\d+)", onclick):
+                        final_url = f"https://direct.lghellovision.net/event/viewEventDetail.do?idxOfEvent={m.group(1)}"
                 
                 elif "SK 7세븐모바일" in site_name and "fnSearchView" in onclick:
-                    match = re.search(r"fnSearchView\('([^']+)'", onclick)
-                    if match:
-                        final_url = f"https://www.sk7mobile.com/bnef/event/eventIngView.do?cntId={match.group(1)}"
+                    if m := re.search(r"fnSearchView\('([^']+)'", onclick):
+                        final_url = f"https://www.sk7mobile.com/bnef/event/eventIngView.do?cntId={m.group(1)}"
                 
                 elif href and "javascript" not in href:
                     final_url = href
-                elif href: # KTM 등
+                elif href: 
                     final_url = href
 
                 if not final_url: continue
@@ -266,7 +251,6 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
         remove_popups(driver)
         scroll_to_bottom(driver)
         
-        # [그룹별 함수 분기]
         if site_name in ["SKT 다이렉트", "U+ 유모바일", "스카이라이프"]:
             page_data = extract_legacy_simple(driver, target_selector, site_name)
         else:
@@ -307,13 +291,10 @@ def main():
         driver = setup_driver()
         
         competitors = [
-            # [그룹 A: 기존 성공 멤버 - V16 로직]
             {"name": "SKT 다이렉트", "url": "https://shop.tworld.co.kr/exhibition/submain", "param": None, "selector": "#wrap > div.container > div > div.event-list-wrap > div > ul"},
             {"name": "SKT Air", "url": "https://sktair-event.com/", "param": None, "selector": "#app > div > section.content"},
             {"name": "U+ 유모바일", "url": "https://www.uplusumobile.com/event-benefit/event/ongoing", "param": None, "selector": "#wrap > main > div > section"},
             {"name": "스카이라이프", "url": "https://www.skylife.co.kr/event?category=mobile", "param": "p", "selector": "body > div.pb-50.min-w-\[1248px\] > div.m-auto.max-w-\[1248px\].pt-20 > div > div > div.pt-14 > div > div.grid.grid-cols-3.gap-6.pt-4"},
-            
-            # [그룹 B: 문제아 멤버 - JS 해독 로직]
             {"name": "헬로모바일", "url": "https://direct.lghellovision.net/event/viewEventList.do?returnTab=allli", "param": "#", "selector": ".event-list-wrap"},
             {"name": "SK 7세븐모바일", "url": "https://www.sk7mobile.com/bnef/event/eventIngList.do", "param": None, "selector": ".tb-list.bbs-card"},
             {"name": "KTM 모바일", "url": "https://www.ktmmobile.com/event/eventBoardList.do", "param": None, "selector": "#listArea1"}
@@ -365,10 +346,52 @@ def generate_report(today_results):
             if is_changed:
                 color = "green" if change_type == "NEW" else "red" if change_type == "DELETED" else "orange"
                 img_html = f"<img src='{curr['img']}' style='height:50px; vertical-align:middle; margin-right:10px;'>" if curr['img'] else ""
-                site_changes += f"""<div style="border-left: 5px solid {color}; padding: 10px; margin-bottom: 10px; background: #fff;">
+                
+                # [수정] f-string 안전하게 처리 (문법 에러 방지)
+                site_changes += f"""
+                <div style="border-left: 5px solid {color}; padding: 10px; margin-bottom: 10px; background: #fff;">
                     <h3 style="margin: 0 0 5px 0;"><span style="color:{color};">[{change_type}]</span> {curr['title']}</h3>
-                    <div style="display:flex; align-items:center;">{img_html}<div style="font-size: 0.9em; color: #555;"><b>변경 사유:</b> {reason}<br><a href="{url}" target="_blank">🔗 바로가기</a></div></div></div>"""
+                    <div style="display:flex; align-items:center;">
+                        {img_html}
+                        <div style="font-size: 0.9em; color: #555;">
+                            <b>변경 사유:</b> {reason}<br>
+                            <a href="{url}" target="_blank">🔗 바로가기</a>
+                        </div>
+                    </div>
+                </div>
+                """
                 site_change_count += 1
         
         if site_changes:
-            report_body += f"<h2>{name}
+            # [수정] f-string 줄바꿈 안전하게 처리
+            report_body += f"""
+            <h2>{name} ({site_change_count}건)</h2>
+            {site_changes}
+            <hr>
+            """
+            total_change_count += site_change_count
+            company_summary.append(f"{name}({site_change_count})")
+
+    summary_text = f"총 {total_change_count}건 업데이트 ({', '.join(company_summary)})" if total_change_count > 0 else "특이사항 없음"
+    
+    # [수정] HTML 생성부 안전하게 처리
+    report_header = f"""
+    <h1>📅 {DISPLAY_DATE} 리포트 <span style='font-size:0.6em; color:#888;'>({DISPLAY_TIME} KST)</span></h1>
+    <div style='background-color:#f4f4f4; padding:15px;'><h3>📊 {summary_text}</h3></div>
+    <hr>
+    """
+    
+    full_report = report_header + (report_body if total_change_count > 0 else "<p>✅ 금일 변동 사항이 없습니다.</p>")
+    
+    filename = f"report_{FILE_TIMESTAMP}.html"
+    with open(os.path.join(REPORT_DIR, filename), "w", encoding="utf-8") as f: f.write(full_report)
+    update_index_page()
+    
+    dashboard_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/"
+    report_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{filename}"
+    
+    payload = {"text": f"📢 *[KST {DISPLAY_TIME}] 경쟁사 동향 보고* \n\n✅ *요약:* {summary_text}\n\n👉 *변경 리포트:* {report_url}\n📂 *대시보드:* {dashboard_url}"}
+    if SLACK_WEBHOOK_URL: requests.post(SLACK_WEBHOOK_URL, json=payload)
+
+if __name__ == "__main__":
+    main()
