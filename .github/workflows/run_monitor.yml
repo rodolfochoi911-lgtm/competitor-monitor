@@ -1,13 +1,12 @@
-name: Daily Monitor
+name: Daily Competitor Monitor
 
 on:
   schedule:
-    # 1. 한국 시간 오전 8시 (UTC 23:00)
-    - cron: '0 23 * * *'
-    # 2. 한국 시간 오후 3시 (UTC 06:00)
-    - cron: '0 6 * * *'
+    # 1. 아침 8시 수령 목표 -> 한국 시간 07:44 시작 (UTC 22:44)
+    - cron: '44 22 * * *'
+    # 2. 오후 3시 수령 목표 -> 한국 시간 14:44 시작 (UTC 05:44)
+    - cron: '44 5 * * *'
   
-  # 수동 실행 버튼 (테스트용)
   workflow_dispatch:
 
 permissions:
@@ -17,26 +16,36 @@ jobs:
   run-crawler:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 
       
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
           
-      - name: Install Libs
+      - name: Install Libraries
         run: pip install -r requirements.txt
         
-      - name: Run Script
+      - name: Run Crawler Script
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: python main.py
         
-      - name: Commit Results
+      - name: Commit and Push Results
         run: |
           git config --global user.name "AutoBot"
           git config --global user.email "bot@github.com"
           git add data/ docs/
-          # 변동사항 없어서 커밋할 게 없으면 에러 안 내고 넘어감 (|| exit 0)
-          git commit -m "Update Report: $(date +'%Y-%m-%d %H:%M:%S')" || exit 0
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          
+          git commit -m "Update Report: $(date +'%Y-%m-%d %H:%M:%S')"
+          
+          git pull --rebase
           git push
