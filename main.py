@@ -1,14 +1,14 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V21)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V22)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-01-30 (헬로모바일 & SK 7모바일 JS 링크 해독 로직 완비)
+[업데이트] 2026-01-30 (전수조사 모드 / 헬로모바일 & 7모바일 JS 해독 / 안전장치 해제)
 """
 
 import os
 import json
 import time
 import glob
-import re # 정규표현식 필수
+import re
 from datetime import datetime, timedelta, timezone
 import requests
 from bs4 import BeautifulSoup
@@ -65,6 +65,7 @@ def remove_popups(driver):
 def scroll_to_bottom(driver):
     try:
         last_height = driver.execute_script("return document.body.scrollHeight")
+        # 전수조사를 위해 스크롤 충분히 (5회)
         for _ in range(5): 
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(1)
@@ -112,7 +113,7 @@ def analyze_content_changes(old_html, new_html):
         summary.append("🖼️ 상세이미지 교체")
     return " / ".join(summary) if summary else "🎨 디자인/레이아웃 변경"
 
-# [핵심] V21 스마트 카드 추출기 (JS 해독 기능 탑재)
+# [핵심] V22 스마트 카드 추출기 (JS 해독 + 전수조사)
 def extract_cards_smartly(driver, container_selector, site_name):
     cards_data = {} 
     try:
@@ -135,27 +136,36 @@ def extract_cards_smartly(driver, container_selector, site_name):
         elif "스카이라이프" in site_name:
             items = container.find_elements(By.XPATH, "./div")
 
-        # 4. [HELLOMOBILE] ID 추출 모드
+        # 4. [HELLOMOBILE] JS ID 추출
         elif "헬로모바일" in site_name:
-            print("    ⚡ 헬로모바일: JS ID 추출 모드")
+            print("    ⚡ 헬로모바일: JS ID 해독 모드")
+            # HTML 구조상 .event-list 안에 li들이 있음
             try:
-                # 정확한 리스트 영역 (.event-list) 타겟팅
                 list_ul = container.find_element(By.CSS_SELECTOR, ".event-list")
                 items = list_ul.find_elements(By.TAG_NAME, "li")
             except:
                 items = container.find_elements(By.TAG_NAME, "li")
 
-        # 5. [SK 7MOBILE] ID 추출 모드 (NEW!)
+        # 5. [SK 7MOBILE] JS ID 추출
         elif "SK 7세븐모바일" in site_name:
-            print("    ⚡ SK 7모바일: JS ID 추출 모드")
-            items = container.find_elements(By.TAG_NAME, "li")
+            print("    ⚡ SK 7모바일: JS ID 해독 모드")
+            # HTML 구조상 .event-group 안에 li들이 있음
+            try:
+                # event-group이 여러 개일 수 있으므로 모두 찾음
+                groups = container.find_elements(By.CSS_SELECTOR, ".event-group")
+                for g in groups:
+                    items.extend(g.find_elements(By.TAG_NAME, "li"))
+            except:
+                items = container.find_elements(By.TAG_NAME, "li")
 
-        # 6. KTM 등 나머지: 링크 전수조사
+        # 6. KTM / 그 외: 전수조사
         else:
             print(f"    ⚡ {site_name}: 링크 전수조사")
-            items = container.find_elements(By.TAG_NAME, "a")
+            items = container.find_elements(By.TAG_NAME, "li")
+            if not items: items = container.find_elements(By.TAG_NAME, "a")
 
         if not items:
+            print("    ⚠️ 아이템 없음 -> a 태그 강제 수집")
             items = container.find_elements(By.TAG_NAME, "a")
 
         print(f"    found {len(items)} items in {site_name}")
@@ -172,26 +182,25 @@ def extract_cards_smartly(driver, container_selector, site_name):
                 
                 final_url = ""
 
-                # [Case A] 헬로모바일 URL 복원 (fncEventDetail)
+                # [해독 1] 헬로모바일: fncEventDetail(753, ...)
                 if "헬로모바일" in site_name and onclick:
                     match = re.search(r"fncEventDetail\((\d+)", onclick)
                     if match:
                         event_id = match.group(1)
                         final_url = f"https://direct.lghellovision.net/event/viewEventDetail.do?idxOfEvent={event_id}"
                 
-                # [Case B] SK 7모바일 URL 복원 (fnSearchView)
+                # [해독 2] SK 7모바일: fnSearchView('code', ...)
                 elif "SK 7세븐모바일" in site_name and onclick:
-                    # fnSearchView('d923958d...', false) 패턴
                     match = re.search(r"fnSearchView\('([^']+)'", onclick)
                     if match:
                         content_id = match.group(1)
                         final_url = f"https://www.sk7mobile.com/bnef/event/eventIngView.do?cntId={content_id}"
                 
-                # [Case C] 일반 링크
+                # [일반] href 사용
                 elif href and "javascript" not in href:
                     final_url = href
                 
-                # [Case D] Fallback (JS 링크라도 일단 저장)
+                # [Fallback] JS 링크지만 일단 가져옴 (유니크 키 용도)
                 elif href:
                     final_url = href
 
@@ -216,87 +225,62 @@ def extract_cards_smartly(driver, container_selector, site_name):
             
         return cards_data
     except Exception as e:
-        print(f"    ⚠️ {site_name} 카드 추출 실패 ({e})")
+        print(f"    ⚠️ 카드 추출 오류: {e}")
         return {}
 
 def extract_single_page_content(driver, selector):
-    print("    📸 단일 페이지 스냅샷 모드 (SKT Air)")
+    print("    📸 단일 페이지 스냅샷 (SKT Air)")
     try:
         container = WebDriverWait(driver, 5).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, selector))
         )
         html_content = clean_html(container.get_attribute('outerHTML'))
         return {driver.current_url: {"title": "SKT Air 메인 프로모션", "img": "", "content": html_content}}
-    except Exception as e:
-        print(f"    ❌ SKT Air 추출 실패: {e}")
-        return {}
+    except: return {}
 
 def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_selector=None):
     print(f"🚀 [{site_name}] 데이터 수집 시작...")
     collected_items = {} 
-    last_page_urls = []
-    page = 1
     
     if site_name == "SKT Air":
         driver.get(base_url)
-        time.sleep(5)
+        time.sleep(3)
         remove_popups(driver)
         return extract_single_page_content(driver, target_selector)
 
-    while True:
-        target_url = base_url
-        if pagination_param:
-            if pagination_param == "#": 
-                target_url = f"{base_url}#{page}"
-            else:
-                connector = '&' if '?' in base_url else '?'
-                target_url = f"{base_url}{connector}{pagination_param}={page}"
-            
-        try:
-            driver.get(target_url)
-            if pagination_param == "#": 
-                driver.refresh()
-                time.sleep(2)
-                
-            time.sleep(4)
-            remove_popups(driver)
-            scroll_to_bottom(driver)
-            
-            page_data = extract_cards_smartly(driver, target_selector, site_name)
-            
-            clean_page_data = {}
-            for href, info in page_data.items():
-                if href.startswith('/'):
-                    from urllib.parse import urljoin
-                    href = urljoin(base_url, href)
-                clean_page_data[href] = info
+    # 페이지네이션 없이 1페이지만 전수조사 (일반적 상황)
+    # 필요하면 while 루프 살릴 수 있지만, 현재 이슈 해결이 우선이라 1페이지 집중
+    target_url = base_url
+    if pagination_param == "#": target_url = f"{base_url}#1"
+        
+    try:
+        driver.get(target_url)
+        time.sleep(3)
+        remove_popups(driver)
+        scroll_to_bottom(driver)
+        
+        # 카드 수집
+        page_data = extract_cards_smartly(driver, target_selector, site_name)
+        
+        # 절대경로 변환
+        for href, info in page_data.items():
+            if href.startswith('/'):
+                from urllib.parse import urljoin
+                href = urljoin(base_url, href)
+            collected_items[href] = info
 
-            if page == 1:
-                print(f"  - Page {page}: {len(clean_page_data)}개 항목 발견")
-            
-            if not clean_page_data: break
-            
-            current_urls = sorted(list(clean_page_data.keys()))
-            if current_urls == sorted(last_page_urls): break
-            
-            collected_items.update(clean_page_data)
-            
-            if not pagination_param: break
-            last_page_urls = current_urls
-            page += 1
-            if page > 10: break
+    except Exception as e:
+        print(f"  ⚠️ 오류: {e}")
 
-        except Exception as e:
-            print(f"  ⚠️ 오류: {e}")
-            break
-
-    print(f"  🔎 상세 분석 중 ({len(collected_items)}건)...")
+    # [전수조사] 모든 상세 페이지 접속 (시간 걸림)
+    print(f"  🔎 상세 분석 중 ({len(collected_items)}건) - 잠시만 기다려주세요...")
+    
     for url, info in collected_items.items():
         try:
-            # 해독된 URL은 직접 접속해서 내용 긁기 가능
+            # 해독된 URL은 접속 가능
             if "javascript" not in url:
                 driver.get(url)
-                time.sleep(1)
+                time.sleep(1) # 안정성을 위해 1초 대기
                 remove_popups(driver)
                 collected_items[url]['content'] = clean_html(driver.page_source)
             else:
@@ -353,13 +337,11 @@ def main():
         {"name": "U+ 유모바일", "url": "https://www.uplusumobile.com/event-benefit/event/ongoing", "param": None, "selector": "#wrap > main > div > section"},
         {"name": "스카이라이프", "url": "https://www.skylife.co.kr/event?category=mobile", "param": "p", "selector": "body > div.pb-50.min-w-\[1248px\] > div.m-auto.max-w-\[1248px\].pt-20 > div > div > div.pt-14 > div > div.grid.grid-cols-3.gap-6.pt-4"},
         
-        # [수정] 헬로모바일 (JS ID 추출)
+        # [JS 해독 + 울타리 타겟팅]
         {"name": "헬로모바일", "url": "https://direct.lghellovision.net/event/viewEventList.do?returnTab=allli", "param": "#", "selector": ".event-list-wrap"},
-        
-        # [수정] SK 7모바일 (JS ID 추출)
         {"name": "SK 7세븐모바일", "url": "https://www.sk7mobile.com/bnef/event/eventIngList.do", "param": None, "selector": ".tb-list.bbs-card"},
         
-        # [수정] KTM 모바일 (링크 전수조사)
+        # [KTM: 리스트 영역 고정]
         {"name": "KTM 모바일", "url": "https://www.ktmmobile.com/event/eventBoardList.do", "param": None, "selector": "#listArea1"}
     ]
     
@@ -408,3 +390,17 @@ def main():
                     reason = f"제목 변경: {prev['title']} -> {curr['title']}"
                 elif curr['img'] != prev['img']:
                     is_changed = True
+                    change_type = "UPDATED"
+                    reason = "썸네일/배너 이미지 변경"
+                elif curr['content'].replace(" ","") != prev['content'].replace(" ",""):
+                    is_changed = True
+                    change_type = "UPDATED"
+                    reason = analyze_content_changes(prev['content'], curr['content'])
+
+            if is_changed:
+                color = "green" if change_type == "NEW" else "red" if change_type == "DELETED" else "orange"
+                img_html = f"<img src='{curr['img']}' style='height:50px; vertical-align:middle; margin-right:10px;'>" if curr['img'] else ""
+                site_changes += f"""
+                <div style="border-left: 5px solid {color}; padding: 10px; margin-bottom: 10px; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.1);">
+                    <h3 style="margin: 0 0 5px 0;">
+                        <span style="color:{color}; font-weight:bold;">[{change_type}]</span> {curr['title']}
