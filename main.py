@@ -1,7 +1,7 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V33)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V35)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-01-30 (크롤링 V31 유지 + 슬랙 전송 로직 V16 원상복구)
+[업데이트] 2026-01-30 (KeyError 'content' 해결 / 구버전 데이터 호환성 패치)
 """
 
 import os
@@ -314,16 +314,12 @@ def main():
         
         driver.quit()
         
-        # 파일 저장
         data_filename = f"data_{FILE_TIMESTAMP}.json"
         with open(os.path.join(DATA_DIR, data_filename), "w", encoding="utf-8") as f:
             json.dump(today_results, f, ensure_ascii=False)
             
         print("✅ 데이터 수집 완료. 리포트 생성 시작...")
 
-        # =========================================================
-        # [슬랙 전송 로직: V16 시절 코드 원상복구]
-        # =========================================================
         yesterday_results = load_previous_data()
         report_body = ""
         total_change_count = 0
@@ -337,23 +333,27 @@ def main():
             
             for url in all_urls:
                 is_changed = False; change_type = ""; reason = ""
+                # [Fix] .get()으로 안전하게 접근 (없으면 빈 문자열)
                 curr = pages.get(url, {"title": "?", "img": "", "content": ""})
                 prev = old_pages.get(url, {"title": "?", "img": "", "content": ""})
                 
+                curr_content = curr.get('content', '').replace(" ", "")
+                prev_content = prev.get('content', '').replace(" ", "")
+
                 if url in pages and url not in old_pages:
                     is_changed = True; change_type = "NEW"; reason = "신규"
                 elif url not in pages and url in old_pages:
                     is_changed = True; change_type = "DELETED"; reason = "종료"
-                elif curr['content'].replace(" ","") != prev['content'].replace(" ",""):
-                    is_changed = True; change_type = "UPDATED"; reason = analyze_content_changes(prev['content'], curr['content'])
+                elif curr_content != prev_content:
+                    is_changed = True; change_type = "UPDATED"; reason = analyze_content_changes(prev.get('content', ''), curr.get('content', ''))
 
                 if is_changed:
                     color = "green" if change_type == "NEW" else "red" if change_type == "DELETED" else "orange"
-                    img_html = f"<img src='{curr['img']}' style='height:50px; vertical-align:middle; margin-right:10px;'>" if curr['img'] else ""
+                    img_html = f"<img src='{curr.get('img','')}' style='height:50px; vertical-align:middle; margin-right:10px;'>" if curr.get('img') else ""
                     
                     site_changes += f"""
                     <div style="border-left: 5px solid {color}; padding: 10px; margin-bottom: 10px; background: #fff;">
-                        <h3 style="margin: 0 0 5px 0;"><span style="color:{color};">[{change_type}]</span> {curr['title']}</h3>
+                        <h3 style="margin: 0 0 5px 0;"><span style="color:{color};">[{change_type}]</span> {curr.get('title', '제목없음')}</h3>
                         <div style="display:flex; align-items:center;">
                             {img_html}
                             <div style="font-size: 0.9em; color: #555;">
@@ -384,20 +384,22 @@ def main():
         
         filename = f"report_{FILE_TIMESTAMP}.html"
         with open(os.path.join(REPORT_DIR, filename), "w", encoding="utf-8") as f: f.write(full_report)
+        
         update_index_page()
         
         dashboard_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/"
         report_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{filename}"
         
-        # [슬랙 전송: V16 오리지널 방식 복구]
-        if total_change_count > 0:
-            payload = {"text": f"📢 *[KST {DISPLAY_TIME}] 경쟁사 동향 보고* \n\n✅ *요약:* {summary_text}\n\n👉 *변경 리포트:* {report_url}\n📂 *대시보드:* {dashboard_url}"}
-        else:
-            payload = {"text": f"📋 *[KST {DISPLAY_TIME}] 경쟁사 동향 보고* \n\n✅ 특이사항 없음\n📂 *대시보드:* {dashboard_url}"}
-            
+        payload = {"text": f"📢 *[KST {DISPLAY_TIME}] 경쟁사 동향 보고* \n\n✅ *요약:* {summary_text}\n\n👉 *변경 리포트:* {report_url}\n📂 *대시보드:* {dashboard_url}"}
+        
         if SLACK_WEBHOOK_URL:
-            requests.post(SLACK_WEBHOOK_URL, json=payload)
-            print("✅ 슬랙 전송 요청 완료")
+            try:
+                res = requests.post(SLACK_WEBHOOK_URL, json=payload)
+                print(f"✅ 슬랙 전송 완료 (Status: {res.status_code})")
+            except Exception as e:
+                print(f"❌ 슬랙 전송 실패: {e}")
+        else:
+            print("⚠️ SLACK_WEBHOOK_URL이 설정되지 않았습니다.")
 
     except Exception as e:
         print(f"🔥 Critical Error: {traceback.format_exc()}")
