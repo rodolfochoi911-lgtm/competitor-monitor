@@ -1,7 +1,7 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V35)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V36)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-01-30 (KeyError 'content' 해결 / 구버전 데이터 호환성 패치)
+[업데이트] 2026-01-30 (update_index_page 함수 누락 복구 / KeyError 방어 코드 적용)
 """
 
 import os
@@ -107,7 +107,45 @@ def analyze_content_changes(old_html, new_html):
         summary.append("🖼️ 상세이미지 교체")
     return " / ".join(summary) if summary else "🎨 디자인/레이아웃 변경"
 
-# [그룹 A] V16 오리지널 로직 (SKT, 유모바일, 스카이라이프)
+# [누락되었던 함수 복구] 인덱스 페이지 업데이트
+def update_index_page():
+    report_files = glob.glob(os.path.join(REPORT_DIR, "report_*.html"))
+    report_files.sort(reverse=True)
+    
+    index_html = f"""
+    <!DOCTYPE html>
+    <html lang="ko">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>경쟁사 모니터링</title>
+        <style>
+            body {{ font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #f9f9f9; }}
+            h1 {{ border-bottom: 2px solid #0056b3; padding-bottom: 10px; }}
+            .card {{ background: white; padding: 15px; margin-bottom: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
+            a {{ text-decoration: none; color: #0056b3; font-weight: bold; }}
+            .badge {{ background: #28a745; color: white; padding: 3px 8px; border-radius: 10px; font-size: 0.8em; }}
+        </style>
+    </head>
+    <body>
+        <h1>📊 모니터링 아카이브</h1>
+        <p>현재 시각: {DISPLAY_DATE} {DISPLAY_TIME} (KST)</p>
+    """
+    if not report_files: index_html += "<p>데이터 없음</p>"
+    for f in report_files:
+        name = os.path.basename(f)
+        ts = name.replace("report_", "").replace(".html", "")
+        try:
+            dt = datetime.strptime(ts, "%Y%m%d_%H%M%S")
+            disp = dt.strftime("%Y-%m-%d %H:%M:%S")
+        except: disp = ts
+        badge = '<span class="badge">NEW</span>' if disp.startswith(DISPLAY_DATE) else ''
+        index_html += f"<div class='card'><a href='reports/{name}'>📄 {disp} 리포트</a> {badge}</div>"
+    index_html += "</body></html>"
+    with open(os.path.join(DOCS_DIR, "index.html"), "w", encoding="utf-8") as f:
+        f.write(index_html)
+
+# [그룹 A] V16 오리지널 로직
 def extract_legacy_simple(driver, container_selector, site_name):
     cards_data = {} 
     try:
@@ -155,7 +193,7 @@ def extract_legacy_simple(driver, container_selector, site_name):
         print(f"    ⚠️ [Legacy] 추출 실패 ({site_name}): {e}")
         return {}
 
-# [그룹 B] JS 해독 로직 (헬로모바일, 7모바일, KTM)
+# [그룹 B] JS 해독 로직
 def extract_special_js(driver, container_selector, site_name):
     cards_data = {} 
     try:
@@ -333,10 +371,10 @@ def main():
             
             for url in all_urls:
                 is_changed = False; change_type = ""; reason = ""
-                # [Fix] .get()으로 안전하게 접근 (없으면 빈 문자열)
                 curr = pages.get(url, {"title": "?", "img": "", "content": ""})
                 prev = old_pages.get(url, {"title": "?", "img": "", "content": ""})
                 
+                # [Fix: KeyError 방지] .get('content', '') 사용
                 curr_content = curr.get('content', '').replace(" ", "")
                 prev_content = prev.get('content', '').replace(" ", "")
 
@@ -385,6 +423,7 @@ def main():
         filename = f"report_{FILE_TIMESTAMP}.html"
         with open(os.path.join(REPORT_DIR, filename), "w", encoding="utf-8") as f: f.write(full_report)
         
+        # [누락됐던 함수 호출 복구]
         update_index_page()
         
         dashboard_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/"
@@ -399,7 +438,7 @@ def main():
             except Exception as e:
                 print(f"❌ 슬랙 전송 실패: {e}")
         else:
-            print("⚠️ SLACK_WEBHOOK_URL이 설정되지 않았습니다.")
+            print("⚠️ SLACK_WEBHOOK_URL 없음.")
 
     except Exception as e:
         print(f"🔥 Critical Error: {traceback.format_exc()}")
