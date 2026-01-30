@@ -1,7 +1,7 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V14)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V17)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-01-29 (SKT Air 단일페이지 처리 + 헬로모바일 해시 페이징 + SK 7모바일 추가)
+[업데이트] 2026-01-30 (세븐모바일/KTM/헬로모바일 링크 전수조사 로직 적용)
 """
 
 import os
@@ -9,7 +9,6 @@ import json
 import time
 import glob
 from datetime import datetime, timedelta, timezone
-import difflib
 import requests
 from bs4 import BeautifulSoup
 
@@ -32,7 +31,6 @@ DATA_DIR = "data"
 DOCS_DIR = "docs"
 REPORT_DIR = "docs/reports"
 
-# 한국 시간 설정
 KST = timezone(timedelta(hours=9))
 NOW = datetime.now(KST)
 FILE_TIMESTAMP = NOW.strftime("%Y%m%d_%H%M%S")
@@ -113,37 +111,41 @@ def analyze_content_changes(old_html, new_html):
         summary.append("🖼️ 상세이미지 교체")
     return " / ".join(summary) if summary else "🎨 디자인/레이아웃 변경"
 
-# [핵심] 카드 추출기 (엄격한 Selector 적용)
+# [핵심] 스마트 카드 추출기 (사이트별 맞춤 전략)
 def extract_cards_smartly(driver, container_selector, site_name):
     cards_data = {} 
     try:
-        # 컨테이너 대기
         container = WebDriverWait(driver, 5).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, container_selector))
         )
         
-        # 사이트별 아이템 태그 전략
         items = []
+        
+        # 1. SKT 다이렉트 (성공 - 고정)
         if "SKT 다이렉트" in site_name:
             items = container.find_elements(By.TAG_NAME, "li")
-        elif "KTM" in site_name:
-            items = container.find_elements(By.TAG_NAME, "li") # listArea1 직계 li
+
+        # 2. 유모바일 (성공 - 고정)
         elif "유모바일" in site_name:
-            # 유모바일 section 아래 div나 li 등을 찾음
-            items = container.find_elements(By.XPATH, ".//*[contains(@class, 'event') or contains(@class, 'card') or name()='li']")
-        elif "헬로모바일" in site_name:
-            items = container.find_elements(By.TAG_NAME, "li")
+            items = container.find_elements(By.XPATH, ".//li | .//div[contains(@class, 'card')]")
+            if not items: items = container.find_elements(By.TAG_NAME, "li")
+
+        # 3. 스카이라이프 (성공 - 고정)
         elif "스카이라이프" in site_name:
             items = container.find_elements(By.XPATH, "./div")
-        elif "세븐모바일" in site_name:
-            # table 형태 or list 형태
-            items = container.find_elements(By.XPATH, ".//tr | .//li | .//div[contains(@class, 'item')]")
-        
-        # 공통 Fallback: 못 찾으면 그냥 a 태그를 아이템으로 간주
-        if not items:
+
+        # 4. [수정] 문제의 3대장 (KTM, 헬로, 세븐) -> "무차별 링크 수집" 전략
+        # 박스 안의 'li'를 찾는 게 아니라, 'a' 태그 자체를 아이템으로 간주
+        elif any(x in site_name for x in ["KTM", "헬로모바일", "세븐모바일"]):
+            print(f"    ⚡ {site_name}: 링크(a) 전수조사 모드 가동")
             items = container.find_elements(By.TAG_NAME, "a")
 
-        print(f"    found {len(items)} items in {container_selector}")
+        # 공통 Fallback
+        if not items:
+            print(f"    ⚠️ {site_name}: 아이템 못 찾음 -> 링크(a) 직접 탐색 시도")
+            items = container.find_elements(By.TAG_NAME, "a")
+
+        print(f"    found {len(items)} items in {site_name}")
 
         for item in items:
             try:
@@ -156,18 +158,21 @@ def extract_cards_smartly(driver, container_selector, site_name):
                 href = link_el.get_attribute('href')
                 if not href or "javascript" in href: continue
 
-                # 제목
+                # 제목 찾기 (우선순위: 텍스트 -> 이미지 alt)
                 title = item.text.strip().split("\n")[0]
                 if not title:
                     try: title = item.find_element(By.TAG_NAME, "img").get_attribute("alt")
                     except: title = "제목 없음"
                 
-                # 이미지
+                # [필터링] 제목이 너무 짧거나(이동 버튼), 의미 없는 링크 제외
+                if len(title) < 2 and "이벤트" not in title: continue 
+
+                # 이미지 찾기
                 img_src = ""
                 try:
                     img = item.find_element(By.TAG_NAME, "img")
                     src = img.get_attribute("src")
-                    if src and "icon" not in src: img_src = src
+                    if src and "icon" not in src and "logo" not in src: img_src = src
                 except: pass
 
                 cards_data[href] = {"title": title, "img": img_src}
@@ -175,10 +180,9 @@ def extract_cards_smartly(driver, container_selector, site_name):
             
         return cards_data
     except Exception as e:
-        print(f"    ⚠️ 카드 추출 실패 ({e})")
+        print(f"    ⚠️ {site_name} 카드 추출 실패 ({e})")
         return {}
 
-# [NEW] SKT Air 전용: 단일 페이지 스냅샷
 def extract_single_page_content(driver, selector):
     print("    📸 단일 페이지 스냅샷 모드 (SKT Air)")
     try:
@@ -186,7 +190,6 @@ def extract_single_page_content(driver, selector):
             EC.presence_of_element_located((By.CSS_SELECTOR, selector))
         )
         html_content = clean_html(container.get_attribute('outerHTML'))
-        # URL은 현재 페이지, 제목은 고정
         return {driver.current_url: {"title": "SKT Air 메인 프로모션", "img": "", "content": html_content}}
     except Exception as e:
         print(f"    ❌ SKT Air 추출 실패: {e}")
@@ -198,7 +201,6 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
     last_page_urls = []
     page = 1
     
-    # [특수 처리] SKT Air는 페이지네이션 없이 한 번만 실행하고 종료
     if site_name == "SKT Air":
         driver.get(base_url)
         time.sleep(5)
@@ -206,29 +208,26 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
         return extract_single_page_content(driver, target_selector)
 
     while True:
-        # URL 생성 로직
         target_url = base_url
         if pagination_param:
-            if pagination_param == "#": # 헬로모바일 해시 방식
+            if pagination_param == "#": 
                 target_url = f"{base_url}#{page}"
-            else: # 일반 쿼리 파라미터 방식
+            else:
                 connector = '&' if '?' in base_url else '?'
                 target_url = f"{base_url}{connector}{pagination_param}={page}"
             
         try:
             driver.get(target_url)
-            # 헬로모바일 해시 변경 시 새로고침 필요할 수 있음
-            if pagination_param == "#":
+            if pagination_param == "#": 
                 driver.refresh()
+                time.sleep(2)
                 
             time.sleep(4)
             remove_popups(driver)
             scroll_to_bottom(driver)
             
-            # 1단계: 카드 추출
             page_data = extract_cards_smartly(driver, target_selector, site_name)
             
-            # 절대 경로 보정
             clean_page_data = {}
             for href, info in page_data.items():
                 if href.startswith('/'):
@@ -241,7 +240,6 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
             
             if not clean_page_data: break
             
-            # 페이지네이션 종료 체크
             current_urls = sorted(list(clean_page_data.keys()))
             if current_urls == sorted(last_page_urls): break
             
@@ -250,13 +248,12 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
             if not pagination_param: break
             last_page_urls = current_urls
             page += 1
-            if page > 10: break # 최대 10페이지 제한
+            if page > 10: break
 
         except Exception as e:
             print(f"  ⚠️ 오류: {e}")
             break
 
-    # 2단계: 상세 페이지 진입 (SKT Air 제외)
     print(f"  🔎 상세 분석 중 ({len(collected_items)}건)...")
     for url, info in collected_items.items():
         try:
@@ -309,27 +306,16 @@ def update_index_page():
 def main():
     driver = setup_driver()
     
-    # [설정] 지원이의 피드백을 100% 반영한 최종 리스트
     competitors = [
-        # 1. SKT 다이렉트 (고정 - 성공)
+        # [고정 - 성공]
         {"name": "SKT 다이렉트", "url": "https://shop.tworld.co.kr/exhibition/submain", "param": None, "selector": "#wrap > div.container > div > div.event-list-wrap > div > ul"},
-        
-        # 2. SKT Air (전략 수정: 단일 페이지 통째로 긁기)
         {"name": "SKT Air", "url": "https://sktair-event.com/", "param": None, "selector": "#app > div > section.content"},
-        
-        # 3. KTM 모바일 (범위 축소)
-        {"name": "KTM 모바일", "url": "https://www.ktmmobile.com/event/eventBoardList.do", "param": None, "selector": "#listArea1"},
-        
-        # 4. U+ 유모바일 (범위 최적화)
         {"name": "U+ 유모바일", "url": "https://www.uplusumobile.com/event-benefit/event/ongoing", "param": None, "selector": "#wrap > main > div > section"},
-        
-        # 5. 헬로모바일 (해시 페이지네이션 #1, #2 적용)
-        {"name": "헬로모바일", "url": "https://direct.lghellovision.net/event/viewEventList.do?returnTab=allli", "param": "#", "selector": "#contentWrap > div.event-list-wrap > section > div.list-wrap > ul"},
-        
-        # 6. 스카이라이프 (고정 - 성공)
         {"name": "스카이라이프", "url": "https://www.skylife.co.kr/event?category=mobile", "param": "p", "selector": "body > div.pb-50.min-w-\[1248px\] > div.m-auto.max-w-\[1248px\].pt-20 > div > div > div.pt-14 > div > div.grid.grid-cols-3.gap-6.pt-4"},
         
-        # 7. SK 7모바일 (신규 추가)
+        # [수정 - 링크 전수조사 모드]
+        {"name": "KTM 모바일", "url": "https://www.ktmmobile.com/event/eventBoardList.do", "param": None, "selector": "#listArea1"},
+        {"name": "헬로모바일", "url": "https://direct.lghellovision.net/event/viewEventList.do?returnTab=allli", "param": "#", "selector": ".event-list-wrap"},
         {"name": "SK 7세븐모바일", "url": "https://www.sk7mobile.com/bnef/event/eventIngList.do", "param": None, "selector": "#frm > div.tb-list.bbs-card"}
     ]
     
