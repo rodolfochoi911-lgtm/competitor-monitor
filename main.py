@@ -1,13 +1,14 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V17)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V21)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-01-30 (세븐모바일/KTM/헬로모바일 링크 전수조사 로직 적용)
+[업데이트] 2026-01-30 (헬로모바일 & SK 7모바일 JS 링크 해독 로직 완비)
 """
 
 import os
 import json
 import time
 import glob
+import re # 정규표현식 필수
 from datetime import datetime, timedelta, timezone
 import requests
 from bs4 import BeautifulSoup
@@ -111,7 +112,7 @@ def analyze_content_changes(old_html, new_html):
         summary.append("🖼️ 상세이미지 교체")
     return " / ".join(summary) if summary else "🎨 디자인/레이아웃 변경"
 
-# [핵심] 스마트 카드 추출기 (사이트별 맞춤 전략)
+# [핵심] V21 스마트 카드 추출기 (JS 해독 기능 탑재)
 def extract_cards_smartly(driver, container_selector, site_name):
     cards_data = {} 
     try:
@@ -121,53 +122,88 @@ def extract_cards_smartly(driver, container_selector, site_name):
         
         items = []
         
-        # 1. SKT 다이렉트 (성공 - 고정)
+        # 1. SKT 다이렉트 (고정)
         if "SKT 다이렉트" in site_name:
             items = container.find_elements(By.TAG_NAME, "li")
 
-        # 2. 유모바일 (성공 - 고정)
+        # 2. 유모바일 (고정)
         elif "유모바일" in site_name:
             items = container.find_elements(By.XPATH, ".//li | .//div[contains(@class, 'card')]")
             if not items: items = container.find_elements(By.TAG_NAME, "li")
 
-        # 3. 스카이라이프 (성공 - 고정)
+        # 3. 스카이라이프 (고정)
         elif "스카이라이프" in site_name:
             items = container.find_elements(By.XPATH, "./div")
 
-        # 4. [수정] 문제의 3대장 (KTM, 헬로, 세븐) -> "무차별 링크 수집" 전략
-        # 박스 안의 'li'를 찾는 게 아니라, 'a' 태그 자체를 아이템으로 간주
-        elif any(x in site_name for x in ["KTM", "헬로모바일", "세븐모바일"]):
-            print(f"    ⚡ {site_name}: 링크(a) 전수조사 모드 가동")
+        # 4. [HELLOMOBILE] ID 추출 모드
+        elif "헬로모바일" in site_name:
+            print("    ⚡ 헬로모바일: JS ID 추출 모드")
+            try:
+                # 정확한 리스트 영역 (.event-list) 타겟팅
+                list_ul = container.find_element(By.CSS_SELECTOR, ".event-list")
+                items = list_ul.find_elements(By.TAG_NAME, "li")
+            except:
+                items = container.find_elements(By.TAG_NAME, "li")
+
+        # 5. [SK 7MOBILE] ID 추출 모드 (NEW!)
+        elif "SK 7세븐모바일" in site_name:
+            print("    ⚡ SK 7모바일: JS ID 추출 모드")
+            items = container.find_elements(By.TAG_NAME, "li")
+
+        # 6. KTM 등 나머지: 링크 전수조사
+        else:
+            print(f"    ⚡ {site_name}: 링크 전수조사")
             items = container.find_elements(By.TAG_NAME, "a")
 
-        # 공통 Fallback
         if not items:
-            print(f"    ⚠️ {site_name}: 아이템 못 찾음 -> 링크(a) 직접 탐색 시도")
             items = container.find_elements(By.TAG_NAME, "a")
 
         print(f"    found {len(items)} items in {site_name}")
 
         for item in items:
             try:
-                # 링크 찾기
                 link_el = item if item.tag_name == 'a' else None
                 if not link_el:
                     try: link_el = item.find_element(By.TAG_NAME, "a")
                     except: continue
                 
                 href = link_el.get_attribute('href')
-                if not href or "javascript" in href: continue
+                onclick = link_el.get_attribute('onclick')
+                
+                final_url = ""
 
-                # 제목 찾기 (우선순위: 텍스트 -> 이미지 alt)
+                # [Case A] 헬로모바일 URL 복원 (fncEventDetail)
+                if "헬로모바일" in site_name and onclick:
+                    match = re.search(r"fncEventDetail\((\d+)", onclick)
+                    if match:
+                        event_id = match.group(1)
+                        final_url = f"https://direct.lghellovision.net/event/viewEventDetail.do?idxOfEvent={event_id}"
+                
+                # [Case B] SK 7모바일 URL 복원 (fnSearchView)
+                elif "SK 7세븐모바일" in site_name and onclick:
+                    # fnSearchView('d923958d...', false) 패턴
+                    match = re.search(r"fnSearchView\('([^']+)'", onclick)
+                    if match:
+                        content_id = match.group(1)
+                        final_url = f"https://www.sk7mobile.com/bnef/event/eventIngView.do?cntId={content_id}"
+                
+                # [Case C] 일반 링크
+                elif href and "javascript" not in href:
+                    final_url = href
+                
+                # [Case D] Fallback (JS 링크라도 일단 저장)
+                elif href:
+                    final_url = href
+
+                if not final_url: continue
+
+                # 제목 추출
                 title = item.text.strip().split("\n")[0]
                 if not title:
                     try: title = item.find_element(By.TAG_NAME, "img").get_attribute("alt")
                     except: title = "제목 없음"
                 
-                # [필터링] 제목이 너무 짧거나(이동 버튼), 의미 없는 링크 제외
-                if len(title) < 2 and "이벤트" not in title: continue 
-
-                # 이미지 찾기
+                # 이미지 추출
                 img_src = ""
                 try:
                     img = item.find_element(By.TAG_NAME, "img")
@@ -175,7 +211,7 @@ def extract_cards_smartly(driver, container_selector, site_name):
                     if src and "icon" not in src and "logo" not in src: img_src = src
                 except: pass
 
-                cards_data[href] = {"title": title, "img": img_src}
+                cards_data[final_url] = {"title": title, "img": img_src}
             except: continue
             
         return cards_data
@@ -257,10 +293,14 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
     print(f"  🔎 상세 분석 중 ({len(collected_items)}건)...")
     for url, info in collected_items.items():
         try:
-            driver.get(url)
-            time.sleep(1)
-            remove_popups(driver)
-            collected_items[url]['content'] = clean_html(driver.page_source)
+            # 해독된 URL은 직접 접속해서 내용 긁기 가능
+            if "javascript" not in url:
+                driver.get(url)
+                time.sleep(1)
+                remove_popups(driver)
+                collected_items[url]['content'] = clean_html(driver.page_source)
+            else:
+                collected_items[url]['content'] = "JS Link (No Content)"
         except:
             collected_items[url]['content'] = "" 
             
@@ -307,16 +347,20 @@ def main():
     driver = setup_driver()
     
     competitors = [
-        # [고정 - 성공]
+        # [고정] 성공한 4개
         {"name": "SKT 다이렉트", "url": "https://shop.tworld.co.kr/exhibition/submain", "param": None, "selector": "#wrap > div.container > div > div.event-list-wrap > div > ul"},
         {"name": "SKT Air", "url": "https://sktair-event.com/", "param": None, "selector": "#app > div > section.content"},
         {"name": "U+ 유모바일", "url": "https://www.uplusumobile.com/event-benefit/event/ongoing", "param": None, "selector": "#wrap > main > div > section"},
         {"name": "스카이라이프", "url": "https://www.skylife.co.kr/event?category=mobile", "param": "p", "selector": "body > div.pb-50.min-w-\[1248px\] > div.m-auto.max-w-\[1248px\].pt-20 > div > div > div.pt-14 > div > div.grid.grid-cols-3.gap-6.pt-4"},
         
-        # [수정 - 링크 전수조사 모드]
-        {"name": "KTM 모바일", "url": "https://www.ktmmobile.com/event/eventBoardList.do", "param": None, "selector": "#listArea1"},
+        # [수정] 헬로모바일 (JS ID 추출)
         {"name": "헬로모바일", "url": "https://direct.lghellovision.net/event/viewEventList.do?returnTab=allli", "param": "#", "selector": ".event-list-wrap"},
-        {"name": "SK 7세븐모바일", "url": "https://www.sk7mobile.com/bnef/event/eventIngList.do", "param": None, "selector": "#frm > div.tb-list.bbs-card"}
+        
+        # [수정] SK 7모바일 (JS ID 추출)
+        {"name": "SK 7세븐모바일", "url": "https://www.sk7mobile.com/bnef/event/eventIngList.do", "param": None, "selector": ".tb-list.bbs-card"},
+        
+        # [수정] KTM 모바일 (링크 전수조사)
+        {"name": "KTM 모바일", "url": "https://www.ktmmobile.com/event/eventBoardList.do", "param": None, "selector": "#listArea1"}
     ]
     
     today_results = {}
@@ -364,82 +408,3 @@ def main():
                     reason = f"제목 변경: {prev['title']} -> {curr['title']}"
                 elif curr['img'] != prev['img']:
                     is_changed = True
-                    change_type = "UPDATED"
-                    reason = "썸네일/배너 이미지 변경"
-                elif curr['content'].replace(" ","") != prev['content'].replace(" ",""):
-                    is_changed = True
-                    change_type = "UPDATED"
-                    reason = analyze_content_changes(prev['content'], curr['content'])
-
-            if is_changed:
-                color = "green" if change_type == "NEW" else "red" if change_type == "DELETED" else "orange"
-                img_html = f"<img src='{curr['img']}' style='height:50px; vertical-align:middle; margin-right:10px;'>" if curr['img'] else ""
-                site_changes += f"""
-                <div style="border-left: 5px solid {color}; padding: 10px; margin-bottom: 10px; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.1);">
-                    <h3 style="margin: 0 0 5px 0;">
-                        <span style="color:{color}; font-weight:bold;">[{change_type}]</span> {curr['title']}
-                    </h3>
-                    <div style="display:flex; align-items:center;">
-                        {img_html}
-                        <div style="font-size: 0.9em; color: #555;">
-                            <b>변경 사유:</b> {reason}<br>
-                            <a href="{url}" target="_blank">🔗 바로가기</a>
-                        </div>
-                    </div>
-                </div>
-                """
-                site_change_count += 1
-        
-        if site_changes:
-            report_body += f"<h2>{name} ({site_change_count}건)</h2>{site_changes}<hr>"
-            total_change_count += site_change_count
-            company_summary.append(f"{name}({site_change_count})")
-
-    full_list_html = f"<h1>📂 {DISPLAY_DATE} 전체 목록 ({DISPLAY_TIME} KST)</h1><hr>"
-    for name, pages in today_results.items():
-        full_list_html += f"<h3>{name} ({len(pages)}개)</h3><div style='display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:10px;'>"
-        for url, data in pages.items():
-            img_tag = f"<img src='{data['img']}' style='width:100%; height:100px; object-fit:cover; border-radius:5px;'>" if data['img'] else ""
-            full_list_html += f"<div style='border:1px solid #ddd; padding:10px; border-radius:8px;'><a href='{url}' target='_blank'>{img_tag}<p style='font-size:0.9em; margin-top:5px;'>{data['title']}</p></a></div>"
-        full_list_html += "</div><hr>"
-    
-    list_filename = f"list_{FILE_TIMESTAMP}.html"
-    with open(os.path.join(REPORT_DIR, list_filename), "w", encoding="utf-8") as f:
-        f.write(full_list_html)
-
-    summary_text = f"총 {total_change_count}건 업데이트 ({', '.join(company_summary)})" if total_change_count > 0 else "특이사항 없음"
-    report_header = f"""
-    <h1>📅 {DISPLAY_DATE} 리포트 <span style="font-size:0.6em; color:#888;">({DISPLAY_TIME} KST)</span></h1>
-    <div style='background-color:#f4f4f4; padding:15px; border-radius:10px; border:1px solid #ddd;'>
-        <h3>📊 {summary_text}</h3>
-        <p><a href="../index.html">🔙 대시보드</a> | <a href="{list_filename}" target="_blank">🗂️ 전체 수집 목록(이미지 포함) 보기</a></p>
-    </div>
-    <hr>
-    """
-    full_report = report_header + (report_body if total_change_count > 0 else "<p>✅ 금일 변동 사항이 없습니다.</p>")
-    
-    filename = f"report_{FILE_TIMESTAMP}.html"
-    with open(os.path.join(REPORT_DIR, filename), "w", encoding="utf-8") as f:
-        f.write(full_report)
-    
-    data_filename = f"data_{FILE_TIMESTAMP}.json"
-    with open(os.path.join(DATA_DIR, data_filename), "w", encoding="utf-8") as f:
-        json.dump(today_results, f, ensure_ascii=False)
-
-    update_index_page()
-
-    dashboard_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/"
-    report_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{filename}"
-    list_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{list_filename}"
-    
-    if total_change_count > 0:
-        payload = {"text": f"📢 *[KST {DISPLAY_TIME}] 경쟁사 동향 보고* \n\n✅ *요약:* {summary_text}\n\n👉 *변경 리포트:* {report_url}\n🗂️ *전체 목록:* {list_url}\n📂 *대시보드:* {dashboard_url}"}
-    else:
-        payload = {"text": f"📋 *[KST {DISPLAY_TIME}] 경쟁사 동향 보고* \n\n✅ 특이사항 없음\n📂 *대시보드:* {dashboard_url}"}
-        
-    if SLACK_WEBHOOK_URL:
-        requests.post(SLACK_WEBHOOK_URL, json=payload)
-        print("✅ 슬랙 알림 완료")
-
-if __name__ == "__main__":
-    main()
