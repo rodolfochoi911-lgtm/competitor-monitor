@@ -1,7 +1,7 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V36)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V37)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-01-30 (update_index_page 함수 누락 복구 / KeyError 방어 코드 적용)
+[업데이트] 2026-01-30 (Legacy 필터 과잉 삭제 / 슬랙 전체목록 링크 복구 / KTM 해독 강화)
 """
 
 import os
@@ -107,7 +107,7 @@ def analyze_content_changes(old_html, new_html):
         summary.append("🖼️ 상세이미지 교체")
     return " / ".join(summary) if summary else "🎨 디자인/레이아웃 변경"
 
-# [누락되었던 함수 복구] 인덱스 페이지 업데이트
+# [수정] 인덱스 페이지 업데이트 함수 (누락 복구)
 def update_index_page():
     report_files = glob.glob(os.path.join(REPORT_DIR, "report_*.html"))
     report_files.sort(reverse=True)
@@ -145,7 +145,9 @@ def update_index_page():
     with open(os.path.join(DOCS_DIR, "index.html"), "w", encoding="utf-8") as f:
         f.write(index_html)
 
-# [그룹 A] V16 오리지널 로직
+# =========================================================
+# [그룹 A] Legacy Simple (유모바일, 스카이라이프 복구용)
+# =========================================================
 def extract_legacy_simple(driver, container_selector, site_name):
     cards_data = {} 
     try:
@@ -172,7 +174,9 @@ def extract_legacy_simple(driver, container_selector, site_name):
                     else: continue
 
                 href = link_el.get_attribute('href')
-                if not href or "javascript" in href: continue
+                
+                # [수정] 과잉 필터 삭제: href가 있으면 무조건 수집 (JS 링크라도 0개보단 나음)
+                if not href: continue 
 
                 title = item.text.strip().split("\n")[0]
                 if not title:
@@ -193,7 +197,9 @@ def extract_legacy_simple(driver, container_selector, site_name):
         print(f"    ⚠️ [Legacy] 추출 실패 ({site_name}): {e}")
         return {}
 
-# [그룹 B] JS 해독 로직
+# =========================================================
+# [그룹 B] JS 해독 로직 (헬로모바일, 7모바일, KTM)
+# =========================================================
 def extract_special_js(driver, container_selector, site_name):
     cards_data = {} 
     try:
@@ -227,16 +233,19 @@ def extract_special_js(driver, container_selector, site_name):
                 
                 final_url = ""
                 
+                # 1. 헬로모바일 해독
                 if "헬로모바일" in site_name and "fncEventDetail" in onclick:
                     match = re.search(r"(\d+)", onclick)
                     if match:
                         final_url = f"https://direct.lghellovision.net/event/viewEventDetail.do?idxOfEvent={match.group(1)}"
                 
+                # 2. SK 7모바일 해독
                 elif "SK 7세븐모바일" in site_name and "fnSearchView" in onclick:
                     match = re.search(r"['\"]([^'\"]+)['\"]", onclick)
                     if match:
                         final_url = f"https://www.sk7mobile.com/bnef/event/eventIngView.do?cntId={match.group(1)}"
                 
+                # 3. KTM 모바일 해독 (숫자만 있으면 일단 긁어옴)
                 elif "KTM 모바일" in site_name:
                     if href and "javascript" not in href: final_url = href
                     else:
@@ -374,7 +383,6 @@ def main():
                 curr = pages.get(url, {"title": "?", "img": "", "content": ""})
                 prev = old_pages.get(url, {"title": "?", "img": "", "content": ""})
                 
-                # [Fix: KeyError 방지] .get('content', '') 사용
                 curr_content = curr.get('content', '').replace(" ", "")
                 prev_content = prev.get('content', '').replace(" ", "")
 
@@ -423,13 +431,26 @@ def main():
         filename = f"report_{FILE_TIMESTAMP}.html"
         with open(os.path.join(REPORT_DIR, filename), "w", encoding="utf-8") as f: f.write(full_report)
         
-        # [누락됐던 함수 호출 복구]
         update_index_page()
         
         dashboard_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/"
         report_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{filename}"
+        list_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/list_{FILE_TIMESTAMP}.html" # 전체 목록 파일 경로 생성
         
-        payload = {"text": f"📢 *[KST {DISPLAY_TIME}] 경쟁사 동향 보고* \n\n✅ *요약:* {summary_text}\n\n👉 *변경 리포트:* {report_url}\n📂 *대시보드:* {dashboard_url}"}
+        # [수정] 전체 목록 HTML 생성 및 저장 (슬랙 링크용)
+        full_list_html = f"<h1>📂 {DISPLAY_DATE} 전체 목록 ({DISPLAY_TIME} KST)</h1><hr>"
+        for name, pages in today_results.items():
+            full_list_html += f"<h3>{name} ({len(pages)}개)</h3><div style='display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:10px;'>"
+            for url, data in pages.items():
+                img_tag = f"<img src='{data.get('img', '')}' style='width:100%; height:100px; object-fit:cover; border-radius:5px;'>" if data.get('img') else ""
+                full_list_html += f"<div style='border:1px solid #ddd; padding:10px; border-radius:8px;'><a href='{url}' target='_blank'>{img_tag}<p style='font-size:0.9em; margin-top:5px;'>{data.get('title', '제목없음')}</p></a></div>"
+            full_list_html += "</div><hr>"
+        
+        with open(os.path.join(REPORT_DIR, f"list_{FILE_TIMESTAMP}.html"), "w", encoding="utf-8") as f:
+            f.write(full_list_html)
+
+        # [수정] 슬랙 Payload에 전체 목록 링크(list_url) 복구
+        payload = {"text": f"📢 *[KST {DISPLAY_TIME}] 경쟁사 동향 보고* \n\n✅ *요약:* {summary_text}\n\n👉 *변경 리포트:* {report_url}\n🗂️ *전체 목록:* {list_url}\n📂 *대시보드:* {dashboard_url}"}
         
         if SLACK_WEBHOOK_URL:
             try:
