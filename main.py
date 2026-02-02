@@ -1,7 +1,7 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V46)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V52)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-02-01 (스카이라이프 뚫기용 'Undetected Chromedriver' 적용)
+[업데이트] 2026-02-02 (모든 이벤트 상세 페이지 진입하여 본문 수집 + 변경 감지 고도화)
 """
 
 import os
@@ -9,13 +9,14 @@ import json
 import time
 import glob
 import random
+import re
 import traceback
 from datetime import datetime, timedelta, timezone
 import requests
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
-# [핵심 변경] 일반 Selenium 대신 undetected_chromedriver 사용
+# [핵심] 언디텍티드 크롬
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -42,19 +43,16 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(REPORT_DIR, exist_ok=True)
 
 def setup_driver():
-    print("🚗 [V46] 언디텍티드(Undetected) 드라이버 설정 중...")
-    
+    print("🚗 [V52] 드라이버 설정 (상세 수집 모드)...")
     options = uc.ChromeOptions()
-    # [중요] 깃허브 액션(서버)에서는 headless 필수
     options.add_argument("--headless=new") 
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
-    options.add_argument("--lang=ko_KR") # 한국어 설정
+    options.add_argument("--lang=ko_KR")
     
-    # version_main=None으로 설정하면 설치된 크롬 버전을 자동 감지함
-    driver = uc.Chrome(options=options, version_main=None)
-    
+    # [버전 고정] 144
+    driver = uc.Chrome(options=options, version_main=144)
     return driver
 
 def remove_popups(driver):
@@ -70,231 +68,147 @@ def scroll_to_bottom(driver):
         last_height = driver.execute_script("return document.body.scrollHeight")
         for _ in range(3): 
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(random.uniform(1.5, 2.5)) 
+            time.sleep(random.uniform(1.0, 2.0))
             new_height = driver.execute_script("return document.body.scrollHeight")
             if new_height == last_height: break
             last_height = new_height
     except: pass
 
 def clean_html(html_source):
+    """HTML에서 스크립트, 스타일 등 불필요한 태그 제거하고 텍스트만 추출"""
     if not html_source: return ""
     soup = BeautifulSoup(html_source, 'html.parser')
-    for tag in soup(['script', 'style', 'meta', 'noscript', 'header', 'footer', 'iframe', 'button', 'input', 'nav', 'aside']):
+    for tag in soup(['script', 'style', 'meta', 'noscript', 'header', 'footer', 'iframe', 'button', 'input', 'nav', 'aside', 'link']):
         tag.decompose()
-    return body.prettify() if (body := soup.find('body')) else "No Content"
+    # 공백 제거한 순수 텍스트 반환 (비교 정확도 향상)
+    return soup.get_text(separator=' ', strip=True)
 
 def load_previous_data():
     json_files = glob.glob(os.path.join(DATA_DIR, "data_*.json"))
     if not json_files: return {}
     json_files.sort()
     latest_file = json_files[-1]
+    print(f"📂 어제 데이터 로드: {latest_file}")
     try:
         with open(latest_file, "r", encoding="utf-8") as f:
             return json.load(f)
     except: return {}
 
-def analyze_content_changes(old_html, new_html):
-    soup_old = BeautifulSoup(old_html, 'html.parser')
-    soup_new = BeautifulSoup(new_html, 'html.parser')
-    if soup_old.get_text().strip() != soup_new.get_text().strip(): return "✏️ 텍스트 수정"
-    imgs_old = set([i['src'] for i in soup_old.find_all('img') if i.get('src')])
-    imgs_new = set([i['src'] for i in soup_new.find_all('img') if i.get('src')])
-    if imgs_old != imgs_new: return "🖼️ 이미지 교체"
-    return "🎨 레이아웃 변경"
+# [비교 로직] 이제 본문(Content)까지 꼼꼼히 비교함
+def analyze_content_changes(prev, curr):
+    # 1. 제목 비교
+    if prev.get('title', '').strip() != curr.get('title', '').strip():
+        return f"✏️ 제목 변경: {prev.get('title')} -> {curr.get('title')}"
+    
+    # 2. 본문 비교 (상세 페이지 텍스트)
+    # 공백/줄바꿈 다 없애고 알맹이 글자만 비교
+    prev_txt = prev.get('content', '').replace(" ", "").replace("\n", "")
+    curr_txt = curr.get('content', '').replace(" ", "").replace("\n", "")
+    
+    if prev_txt and curr_txt and prev_txt != curr_txt:
+        # 너무 긴 텍스트 차이는 그냥 '본문 수정'으로 퉁침
+        return "📝 상세 본문 내용 수정됨"
+            
+    return None 
 
 # =========================================================
-# [전용 1] U+ 유모바일
+# [핵심 함수] 상세 페이지 방문 수집기 (Deep Crawler)
 # =========================================================
-def extract_uplus_mobile(driver):
-    cards_data = {}
+def extract_deep_events(driver, site_name, keyword_list, onclick_pattern=None, base_url=""):
+    collected_data = {}
+    
     try:
-        container = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, ".going-list-wrap"))
-        )
-        items = container.find_elements(By.CSS_SELECTOR, "a.cardList-wrap")
-        print(f"    [U+ Mobile] Found {len(items)} items")
-        for item in items:
-            try:
-                href = item.get_attribute('href')
-                if not href or "javascript" in href: continue
-                final_url = urljoin("https://www.uplusumobile.com", href)
-                try: title = item.find_element(By.CSS_SELECTOR, ".main-title").text.strip()
-                except: title = "제목 없음"
-                img_src = ""
-                try: img_src = item.find_element(By.CSS_SELECTOR, ".cardList-img img").get_attribute("src")
-                except: pass
-                cards_data[final_url] = {"title": title, "img": img_src}
-            except: continue
-    except Exception as e:
-        print(f"    ⚠️ U+ 유모바일 추출 실패: {e}")
-    return cards_data
-
-# =========================================================
-# [전용 2] KTM 모바일
-# =========================================================
-def extract_ktm_mobile(driver):
-    cards_data = {}
-    try:
-        container = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, ".event-list"))
-        )
-        items = container.find_elements(By.TAG_NAME, "li")
-        print(f"    [KTM Mobile] Found {len(items)} items")
-        for item in items:
-            try:
-                link_el = item.find_element(By.TAG_NAME, "a")
-                seq = link_el.get_attribute("ntcartseq")
-                if seq: final_url = f"https://www.ktmmobile.com/event/eventDetail.do?ntcartSeq={seq}"
-                else:
-                    href = link_el.get_attribute('href')
-                    if href and "javascript" not in href: final_url = href
-                    else: continue
-                try: title = item.find_element(By.CSS_SELECTOR, ".event-list__title__sub").text.strip()
-                except: title = "제목 없음"
-                img_src = ""
-                try: img_src = item.find_element(By.TAG_NAME, "img").get_attribute("src")
-                except: pass
-                cards_data[final_url] = {"title": title, "img": img_src}
-            except: continue
-    except Exception as e:
-        print(f"    ⚠️ KTM 모바일 추출 실패: {e}")
-    return cards_data
-
-# =========================================================
-# [전용 3] 스카이라이프 (Undetected + BS4 파싱)
-# =========================================================
-def extract_skylife(driver):
-    cards_data = {}
-    try:
-        print("    [Skylife] 접속 대기중 (5초)...")
+        # [Step 1] 목록 페이지 로딩
         time.sleep(5)
-        
-        # 차단 뚫렸는지 확인을 위해 스크롤
         scroll_to_bottom(driver)
         
-        # HTML 덤프
-        html = driver.page_source
+        # 스카이라이프 차단 체크
+        if site_name == "스카이라이프":
+            if "접속이 원활하지" in driver.page_source:
+                print("    🚨 [Skylife] 차단됨 (목록 진입 불가).")
+                return {}
+
+        # [Step 2] 링크 수집 (목록)
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        all_links = soup.find_all('a')
         
-        # [디버깅] 차단 여부 체크
-        if "접속이 원활하지" in html or "Access Denied" in html:
-            print("    🚨 [Warning] 여전히 차단됨. (IP 문제일 가능성 높음)")
-            driver.save_screenshot(os.path.join(REPORT_DIR, f"debug_skylife_blocked_{FILE_TIMESTAMP}.png"))
-            return {}
+        target_urls = set()
         
-        # BS4 파싱 시작
-        soup = BeautifulSoup(html, 'html.parser')
-        all_links = soup.find_all('a', href=True)
-        print(f"    [Skylife] Links Found: {len(all_links)}")
-        
-        count = 0
+        # 링크 추출 및 정제
         for link in all_links:
-            try:
-                href = link['href']
-                # 이벤트 링크 필터링
-                if "/event/" in href and "javascript" not in href and "category=" not in href:
-                    final_url = urljoin("https://www.skylife.co.kr", href)
-                    if final_url in cards_data: continue
-                    
-                    title = link.get_text().strip()
-                    if not title:
-                        img_tag = link.find('img')
-                        if img_tag and img_tag.get('alt'): title = img_tag['alt']
-                        else: title = "제목 없음"
-                    
-                    img_src = ""
-                    img_tag = link.find('img')
-                    if img_tag:
-                        if img_tag.get('srcset'): img_src = img_tag['srcset'].split(" ")[0]
-                        elif img_tag.get('src'): img_src = img_tag['src']
-                        
-                    cards_data[final_url] = {"title": title, "img": img_src}
-                    count += 1
-            except: continue
-            
-        print(f"    [Skylife] Success Count: {count}")
-        if count == 0:
-             driver.save_screenshot(os.path.join(REPORT_DIR, f"debug_skylife_empty_{FILE_TIMESTAMP}.png"))
+            href = link.get('href', '')
+            onclick = link.get('onclick', '')
+            final_url = ""
 
-    except Exception as e:
-        print(f"    ⚠️ 스카이라이프 오류: {e}")
-    return cards_data
+            if href and "javascript" not in href and "#" != href:
+                for key in keyword_list:
+                    if key in href:
+                        final_url = urljoin(base_url, href)
+                        break
+            elif onclick and onclick_pattern:
+                match = re.search(onclick_pattern, onclick)
+                if match:
+                    if site_name == "헬로모바일":
+                        final_url = f"https://direct.lghellovision.net/event/viewEventDetail.do?idxOfEvent={match.group(1)}"
+                    elif site_name == "SK 7세븐모바일":
+                        final_url = f"https://www.sk7mobile.com/bnef/event/eventIngView.do?cntId={match.group(1)}"
 
-# [기존] Legacy
-def extract_legacy_simple(driver, container_selector, site_name):
-    cards_data = {} 
-    try:
-        container = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, container_selector))
-        )
-        items = container.find_elements(By.TAG_NAME, "li")
-        print(f"    [Legacy] Found {len(items)} items in {site_name}")
-        for item in items:
-            try:
-                try: link_el = item.find_element(By.TAG_NAME, "a")
-                except: 
-                    if item.tag_name == 'a': link_el = item
-                    else: continue
-                href = link_el.get_attribute('href')
-                if not href: continue
-                title = item.text.strip().split("\n")[0]
-                img_src = ""
-                try: img_src = item.find_element(By.TAG_NAME, "img").get_attribute("src")
-                except: pass
-                cards_data[href] = {"title": title, "img": img_src}
-            except: continue
-        return cards_data
-    except Exception as e:
-        print(f"    ⚠️ [Legacy] 추출 실패 ({site_name}): {e}")
-        return {}
+            if site_name == "KTM 모바일" and not final_url:
+                seq = link.get('ntcartseq')
+                if seq: final_url = f"https://www.ktmmobile.com/event/eventDetail.do?ntcartSeq={seq}"
 
-# [기존] JS 해독
-def extract_special_js(driver, container_selector, site_name):
-    cards_data = {} 
-    try:
-        container = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, container_selector))
-        )
-        items = []
-        if "헬로모바일" in site_name:
-            try: items = container.find_element(By.CSS_SELECTOR, ".event-list").find_elements(By.TAG_NAME, "li")
-            except: items = container.find_elements(By.TAG_NAME, "li")
-        elif "SK 7세븐모바일" in site_name:
-            try: 
-                groups = container.find_elements(By.CSS_SELECTOR, ".event-group")
-                for g in groups: items.extend(g.find_elements(By.TAG_NAME, "li"))
-            except: items = container.find_elements(By.TAG_NAME, "li")
+            if final_url:
+                if any(x in final_url for x in ["login", "my", "faq", "support", "logout"]): continue
+                target_urls.add(final_url)
         
-        print(f"    [Special] Found {len(items)} items in {site_name}")
-        for item in items:
+        print(f"    [{site_name}] 발견된 상세 URL: {len(target_urls)}개 -> 상세 수집 시작")
+
+        # [Step 3] 상세 페이지 하나씩 방문 (Deep Crawling)
+        count = 0
+        for url in target_urls:
             try:
-                link_el = item if item.tag_name == 'a' else None
-                if not link_el:
-                    try: link_el = item.find_element(By.TAG_NAME, "a")
-                    except: continue
-                href = link_el.get_attribute('href')
-                onclick = str(link_el.get_attribute('onclick'))
-                final_url = ""
-                if "헬로모바일" in site_name and "fncEventDetail" in onclick:
-                    if m := re.search(r"(\d+)", onclick):
-                        final_url = f"https://direct.lghellovision.net/event/viewEventDetail.do?idxOfEvent={m.group(1)}"
-                elif "SK 7세븐모바일" in site_name and "fnSearchView" in onclick:
-                    if m := re.search(r"['\"]([^'\"]+)['\"]", onclick):
-                        final_url = f"https://www.sk7mobile.com/bnef/event/eventIngView.do?cntId={m.group(1)}"
-                if not final_url:
-                    if href and "javascript" not in href: final_url = href
-                    elif href: final_url = href
-                if not final_url: continue
-                try: title = item.text.strip().split("\n")[0]
-                except: title = "제목 없음"
+                # 상세 페이지 이동
+                driver.get(url)
+                time.sleep(random.uniform(2.0, 3.5)) # 페이지 로딩 대기
+                
+                # 본문 추출
+                content_text = clean_html(driver.page_source)
+                
+                # 제목 추출 (title 태그 활용)
+                page_title = driver.title
+                if not page_title or site_name in page_title: # 사이트 이름만 있으면 본문에서 찾기
+                    try: page_title = driver.find_element(By.TAG_NAME, "h1").text
+                    except: 
+                        try: page_title = driver.find_element(By.CSS_SELECTOR, "h2").text
+                        except: page_title = "제목 없음"
+
+                # 썸네일 (대표 이미지) - 메타태그 활용
                 img_src = ""
-                try: img_src = item.find_element(By.TAG_NAME, "img").get_attribute("src")
+                try:
+                    meta_img = driver.find_element(By.CSS_SELECTOR, "meta[property='og:image']")
+                    img_src = meta_img.get_attribute("content")
                 except: pass
-                cards_data[final_url] = {"title": title, "img": img_src}
-            except: continue
-        return cards_data
+                
+                collected_data[url] = {
+                    "title": page_title.strip(),
+                    "img": img_src,
+                    "content": content_text[:3000] # 너무 길면 자름 (비교용)
+                }
+                count += 1
+                print(f"      - [{count}/{len(target_urls)}] 수집 완료: {page_title[:20]}...")
+                
+                # 차단 방지를 위해 너무 많이는 수집 안 함 (최대 20개 제한)
+                if count >= 20: break
+                
+            except Exception as e:
+                print(f"      ❌ 상세 수집 실패 ({url}): {e}")
+                continue
+                
     except Exception as e:
-        print(f"    ⚠️ [Special] 추출 실패 ({site_name}): {e}")
-        return {}
+        print(f"    ⚠️ {site_name} 목록 수집 실패: {e}")
+        
+    return collected_data
+
 
 def extract_single_page_content(driver, selector):
     try:
@@ -302,66 +216,35 @@ def extract_single_page_content(driver, selector):
         return {driver.current_url: {"title": "SKT Air 메인", "img": "", "content": clean_html(container.get_attribute('outerHTML'))}}
     except: return {}
 
+# =========================================================
+# 통합 크롤링 로직
+# =========================================================
 def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_selector=None):
     print(f"🚀 [{site_name}] 시작...")
-    collected_items = {} 
     
     if site_name == "SKT Air":
         driver.get(base_url); time.sleep(3)
         return extract_single_page_content(driver, target_selector)
-
-    page = 1
-    while True:
-        target_url = base_url
-        if pagination_param == "#": target_url = f"{base_url}#{page}"
-        elif pagination_param == "p": target_url = f"{base_url}?{pagination_param}={page}"
-            
-        driver.get(target_url)
-        if pagination_param == "#": driver.refresh(); time.sleep(2)
-        
-        # 랜덤 대기 추가
-        time.sleep(random.uniform(3, 5))
-        remove_popups(driver)
-        scroll_to_bottom(driver)
-        
-        if site_name == "U+ 유모바일":
-            page_data = extract_uplus_mobile(driver)
-        elif site_name == "KTM 모바일":
-            page_data = extract_ktm_mobile(driver)
-        elif site_name == "스카이라이프":
-            page_data = extract_skylife(driver)
-        elif site_name == "SKT 다이렉트":
-            page_data = extract_legacy_simple(driver, target_selector, site_name)
-        else: 
-            page_data = extract_special_js(driver, target_selector, site_name)
-        
-        if not page_data: break
-        
-        new_cnt = 0
-        for href, info in page_data.items():
-            if href.startswith('/'): href = urljoin(base_url, href) 
-            if href not in collected_items:
-                collected_items[href] = info
-                new_cnt += 1
-        
-        if new_cnt == 0: break
-        if not pagination_param: break
-        
-        page += 1
-        if page > 10: break
-
-    print(f"  🔎 [{site_name}] 상세 분석 ({len(collected_items)}건)...")
-    for url, info in collected_items.items():
-        try:
-            if "javascript" not in url:
-                driver.get(url)
-                time.sleep(0.5)
-                collected_items[url]['content'] = clean_html(driver.page_source)
-            else:
-                collected_items[url]['content'] = "JS Link"
-        except: pass
-            
-    return collected_items
+    
+    # 설정
+    keywords = []
+    onclick = None
+    base = ""
+    
+    if site_name == "U+ 유모바일": keywords = ["event", "benefit"]; base = "https://www.uplusumobile.com"
+    elif site_name == "KTM 모바일": keywords = ["eventDetail"]; base = "https://www.ktmmobile.com"
+    elif site_name == "스카이라이프": keywords = ["/event/"]; base = "https://www.skylife.co.kr"
+    elif site_name == "헬로모바일": keywords = ["event"]; onclick = r"(\d+)"; base = "https://direct.lghellovision.net"
+    elif site_name == "SK 7세븐모바일": keywords = ["event"]; onclick = r"['\"]([^'\"]+)['\"]"; base = "https://www.sk7mobile.com"
+    elif site_name == "SKT 다이렉트": keywords = ["event", "plan"]; base = "https://shop.tworld.co.kr"
+    
+    # [Step 1] 목록 페이지 진입
+    driver.get(base_url)
+    time.sleep(3)
+    remove_popups(driver)
+    
+    # [Step 2] Deep Crawler 실행 (목록 -> 상세 방문 -> 수집)
+    return extract_deep_events(driver, site_name, keywords, onclick, base)
 
 def update_index_page():
     report_files = glob.glob(os.path.join(REPORT_DIR, "report_*.html"))
@@ -375,25 +258,35 @@ def update_index_page():
 
 def main():
     try:
-        # Undetected Driver 설정
         driver = setup_driver()
         
         competitors = [
-            {"name": "SKT 다이렉트", "url": "https://shop.tworld.co.kr/exhibition/submain", "param": None, "selector": "#wrap > div.container > div > div.event-list-wrap > div > ul"},
+            {"name": "SKT 다이렉트", "url": "https://shop.tworld.co.kr/exhibition/submain", "param": None, "selector": ""},
             {"name": "SKT Air", "url": "https://sktair-event.com/", "param": None, "selector": "#app > div > section.content"},
             {"name": "U+ 유모바일", "url": "https://www.uplusumobile.com/event-benefit/event/ongoing", "param": None, "selector": ""},
             {"name": "KTM 모바일", "url": "https://www.ktmmobile.com/event/eventBoardList.do", "param": None, "selector": ""},
             {"name": "스카이라이프", "url": "https://www.skylife.co.kr/event?category=mobile", "param": "p", "selector": ""},
-            {"name": "헬로모바일", "url": "https://direct.lghellovision.net/event/viewEventList.do?returnTab=allli", "param": "#", "selector": ".event-list-wrap"},
-            {"name": "SK 7세븐모바일", "url": "https://www.sk7mobile.com/bnef/event/eventIngList.do", "param": None, "selector": ".tb-list.bbs-card"}
+            {"name": "헬로모바일", "url": "https://direct.lghellovision.net/event/viewEventList.do?returnTab=allli", "param": "#", "selector": ""},
+            {"name": "SK 7세븐모바일", "url": "https://www.sk7mobile.com/bnef/event/eventIngList.do", "param": None, "selector": ""}
         ]
         
+        yesterday_results = load_previous_data()
         today_results = {}
+        
         for comp in competitors:
             try:
-                today_results[comp['name']] = crawl_site_logic(driver, comp['name'], comp['url'], comp['param'], comp['selector'])
+                data = crawl_site_logic(driver, comp['name'], comp['url'], comp['param'], comp['selector'])
+                
+                # [안전장치] 0개면 기존 데이터 유지 (차단/오류 방어)
+                if len(data) == 0:
+                    print(f"    🛑 {comp['name']} 수집 실패(0건). 기존 데이터 유지.")
+                    today_results[comp['name']] = yesterday_results.get(comp['name'], {})
+                else:
+                    today_results[comp['name']] = data
+                    
             except Exception as e:
                 print(f"❌ {comp['name']} Error: {e}")
+                today_results[comp['name']] = yesterday_results.get(comp['name'], {})
         
         driver.quit()
         
@@ -401,9 +294,9 @@ def main():
         with open(os.path.join(DATA_DIR, data_filename), "w", encoding="utf-8") as f:
             json.dump(today_results, f, ensure_ascii=False)
             
-        print("✅ 완료 & 리포트 생성")
+        print("✅ 데이터 저장 완료")
         
-        yesterday_results = load_previous_data()
+        # 리포트 생성
         report_body = ""
         total_change_count = 0
         company_summary = []
@@ -415,27 +308,28 @@ def main():
             site_changes = ""
             
             for url in all_urls:
-                is_changed = False; change_type = ""; reason = ""
-                curr = pages.get(url, {"title": "?", "img": "", "content": ""})
-                prev = old_pages.get(url, {"title": "?", "img": "", "content": ""})
-                
-                curr_content = curr.get('content', '').replace(" ", "")
-                prev_content = prev.get('content', '').replace(" ", "")
+                change_type = ""; reason = ""
+                curr = pages.get(url)
+                prev = old_pages.get(url)
 
-                if url in pages and url not in old_pages:
-                    is_changed = True; change_type = "NEW"; reason = "신규"
-                elif url not in pages and url in old_pages:
-                    is_changed = True; change_type = "DELETED"; reason = "종료"
-                elif curr_content != prev_content:
-                    is_changed = True; change_type = "UPDATED"; reason = analyze_content_changes(prev.get('content', ''), curr.get('content', ''))
+                if curr and not prev:
+                    change_type = "NEW"; reason = "신규 이벤트"
+                elif not curr and prev:
+                    change_type = "DELETED"; reason = "종료된 이벤트"
+                elif curr and prev:
+                    diff_reason = analyze_content_changes(prev, curr)
+                    if diff_reason:
+                        change_type = "UPDATED"; reason = diff_reason
 
-                if is_changed:
+                if change_type:
                     color = "green" if change_type == "NEW" else "red" if change_type == "DELETED" else "orange"
-                    img_html = f"<img src='{curr.get('img','')}' style='height:50px; margin-right:10px;'>" if curr.get('img') else ""
+                    img_src = curr.get('img') if curr else prev.get('img')
+                    img_html = f"<img src='{img_src}' style='height:50px; margin-right:10px;'>" if img_src else ""
+                    title = curr.get('title') if curr else prev.get('title')
                     
                     site_changes += f"""
                     <div style="border-left: 5px solid {color}; padding: 10px; margin-bottom: 10px; background: #fff;">
-                        <h3 style="margin: 0 0 5px 0;"><span style="color:{color};">[{change_type}]</span> {curr.get('title','제목없음')}</h3>
+                        <h3 style="margin: 0 0 5px 0;"><span style="color:{color};">[{change_type}]</span> {title}</h3>
                         <div style="display:flex; align-items:center;">
                             {img_html}
                             <div style="font-size: 0.9em; color: #555;"><b>사유:</b> {reason}<br><a href="{url}" target="_blank">🔗 링크</a></div>
@@ -449,20 +343,20 @@ def main():
                 total_change_count += site_change_count
                 company_summary.append(f"{name}({site_change_count})")
 
-        summary_text = f"총 {total_change_count}건 업데이트 ({', '.join(company_summary)})" if total_change_count > 0 else "특이사항 없음"
+        summary_text = f"총 {total_change_count}건 변동 ({', '.join(company_summary)})" if total_change_count > 0 else "특이사항 없음"
         report_header = f"<h1>📅 {DISPLAY_DATE} 리포트</h1><div><h3>📊 {summary_text}</h3></div><hr>"
         
         filename = f"report_{FILE_TIMESTAMP}.html"
         with open(os.path.join(REPORT_DIR, filename), "w", encoding="utf-8") as f: f.write(report_header + report_body)
         update_index_page()
         
+        # 전체 목록 파일 생성 (디버깅용)
         full_list_html = f"<h1>📂 {DISPLAY_DATE} 전체 목록</h1><hr>"
         for name, pages in today_results.items():
-            full_list_html += f"<h3>{name} ({len(pages)}개)</h3><div style='display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:10px;'>"
+            full_list_html += f"<h3>{name} ({len(pages)}개)</h3><ul>"
             for url, data in pages.items():
-                img = f"<img src='{data.get('img','')}' style='width:100%;'>" if data.get('img') else ""
-                full_list_html += f"<div style='border:1px solid #ddd; padding:10px;'><a href='{url}' target='_blank'>{img}<p>{data.get('title','제목없음')}</p></a></div>"
-            full_list_html += "</div><hr>"
+                full_list_html += f"<li><a href='{url}'>{data.get('title')}</a></li>"
+            full_list_html += "</ul><hr>"
         
         list_filename = f"list_{FILE_TIMESTAMP}.html"
         with open(os.path.join(REPORT_DIR, list_filename), "w", encoding="utf-8") as f: f.write(full_list_html)
