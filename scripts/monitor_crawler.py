@@ -1,10 +1,8 @@
 import os
 import json
 import time
-import random
 import datetime
 import pytz
-import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 
@@ -14,7 +12,6 @@ from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
 # --- [설정] ---
-SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL")
 TZ_KST = pytz.timezone('Asia/Seoul')
 NOW = datetime.datetime.now(TZ_KST)
 YESTERDAY = NOW - datetime.timedelta(days=1)
@@ -35,9 +32,6 @@ def get_driver():
     chrome_options.add_argument("--disable-dev-shm-usage")
     # 일반적인 윈도우 크롬처럼 위장
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    chrome_options.add_experimental_option("useAutomationExtension", False)
     
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
@@ -62,11 +56,12 @@ def get_ppomppu_posts(driver):
     
     if len(rows) == 0:
         print("❌ 게시글을 하나도 못 찾았습니다. (차단되었거나 선택자 변경됨)")
-        # HTML 일부 출력해서 확인
-        print(f"HTML 일부: {soup.text[:200]}")
+        # HTML 일부 출력해서 확인 (차단 메시지 있는지)
+        print(f"HTML 앞부분: {soup.text[:200].strip()}")
         return []
 
     # 2. 날짜 인식 확인 (첫 3개만)
+    print("DEBUG: 상위 3개 글 날짜 확인")
     for i, row in enumerate(rows[:3]):
         date_tag = row.select_one('.board_date')
         title_tag = row.select_one('font.list_title') or row.select_one('a')
@@ -74,7 +69,7 @@ def get_ppomppu_posts(driver):
         d_text = date_tag.text.strip() if date_tag else "없음"
         t_text = title_tag.text.strip() if title_tag else "없음"
         
-        print(f"Row {i+1}: 날짜=[{d_text}] / 제목=[{t_text}]")
+        print(f"  Row {i+1}: 날짜=[{d_text}] / 제목=[{t_text}]")
         
     # 실제 수집 로직
     for row in rows:
@@ -119,6 +114,7 @@ def get_dc_posts(driver):
         return []
 
     # 날짜 인식 확인
+    print("DEBUG: 상위 3개 글 날짜 확인")
     for i, row in enumerate(rows[:3]):
         if 'ub-notice' in row.get('class', []): continue
         date_tag = row.select_one('.gall_date')
@@ -126,7 +122,7 @@ def get_dc_posts(driver):
         
         d_text = date_tag.text.strip() if date_tag else "없음"
         t_text = title_tag.text.strip() if title_tag else "없음"
-        print(f"Row {i+1}: 날짜=[{d_text}] / 제목=[{t_text}]")
+        print(f"  Row {i+1}: 날짜=[{d_text}] / 제목=[{t_text}]")
 
     # 실제 수집
     for row in rows:
@@ -160,11 +156,11 @@ def main():
         total = len(p_data) + len(d_data)
         print(f"\n✅ 최종 합계: {total}건")
         
-        # 파일 저장 (테스트용)
-        if total > 0:
-            os.makedirs('data/monitoring', exist_ok=True)
-            with open(f'data/monitoring/data_{YESTERDAY_FULL}.json', 'w', encoding='utf-8') as f:
-                json.dump(p_data + d_data, f, indent=4, ensure_ascii=False)
+        # 파일 저장 (테스트용 - 0건이라도 일단 파일 생성해서 git 에러 방지)
+        os.makedirs('data/monitoring', exist_ok=True)
+        with open(f'data/monitoring/data_{YESTERDAY_FULL}.json', 'w', encoding='utf-8') as f:
+            json.dump(p_data + d_data, f, indent=4, ensure_ascii=False)
+        print("📁 (진단용) 강제로 JSON 파일 생성함.")
                 
     except Exception as e:
         print(f"에러 발생: {e}")
