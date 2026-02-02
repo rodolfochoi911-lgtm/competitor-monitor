@@ -3,3 +3,4 @@ webdriver-manager
 beautifulsoup4
 requests
 undetected-chromedriver
+openpyxl
