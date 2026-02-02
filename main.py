@@ -1,24 +1,22 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V44)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V46)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-02-01 (스카이라이프 Selenium 탐색 포기 -> BS4 강제 파싱 전환)
+[업데이트] 2026-02-01 (스카이라이프 뚫기용 'Undetected Chromedriver' 적용)
 """
 
 import os
 import json
 import time
 import glob
-import re
+import random
 import traceback
 from datetime import datetime, timedelta, timezone
 import requests
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
+# [핵심 변경] 일반 Selenium 대신 undetected_chromedriver 사용
+import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -44,33 +42,18 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(REPORT_DIR, exist_ok=True)
 
 def setup_driver():
-    print("🚗 브라우저 드라이버 설정 중...")
-    chrome_options = Options()
+    print("🚗 [V46] 언디텍티드(Undetected) 드라이버 설정 중...")
     
-    # [주의] 로컬 테스트 시에는 아래 headless 주석 처리
-    chrome_options.add_argument("--headless") 
+    options = uc.ChromeOptions()
+    # [중요] 깃허브 액션(서버)에서는 headless 필수
+    options.add_argument("--headless=new") 
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--lang=ko_KR") # 한국어 설정
     
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--window-size=1920,1080")
-    
-    # [봇 탐지 우회]
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    chrome_options.add_experimental_option("useAutomationExtension", False)
-
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-    
-    # [Navigator 속임수]
-    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-        "source": """
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            })
-        """
-    })
+    # version_main=None으로 설정하면 설치된 크롬 버전을 자동 감지함
+    driver = uc.Chrome(options=options, version_main=None)
     
     return driver
 
@@ -85,9 +68,9 @@ def remove_popups(driver):
 def scroll_to_bottom(driver):
     try:
         last_height = driver.execute_script("return document.body.scrollHeight")
-        for _ in range(3): # 3번만 내려봄
+        for _ in range(3): 
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(1)
+            time.sleep(random.uniform(1.5, 2.5)) 
             new_height = driver.execute_script("return document.body.scrollHeight")
             if new_height == last_height: break
             last_height = new_height
@@ -130,7 +113,6 @@ def extract_uplus_mobile(driver):
         )
         items = container.find_elements(By.CSS_SELECTOR, "a.cardList-wrap")
         print(f"    [U+ Mobile] Found {len(items)} items")
-        
         for item in items:
             try:
                 href = item.get_attribute('href')
@@ -139,9 +121,7 @@ def extract_uplus_mobile(driver):
                 try: title = item.find_element(By.CSS_SELECTOR, ".main-title").text.strip()
                 except: title = "제목 없음"
                 img_src = ""
-                try:
-                    img = item.find_element(By.CSS_SELECTOR, ".cardList-img img")
-                    img_src = img.get_attribute("src")
+                try: img_src = item.find_element(By.CSS_SELECTOR, ".cardList-img img").get_attribute("src")
                 except: pass
                 cards_data[final_url] = {"title": title, "img": img_src}
             except: continue
@@ -160,26 +140,20 @@ def extract_ktm_mobile(driver):
         )
         items = container.find_elements(By.TAG_NAME, "li")
         print(f"    [KTM Mobile] Found {len(items)} items")
-        
         for item in items:
             try:
                 link_el = item.find_element(By.TAG_NAME, "a")
                 seq = link_el.get_attribute("ntcartseq")
-                if seq:
-                    final_url = f"https://www.ktmmobile.com/event/eventDetail.do?ntcartSeq={seq}"
+                if seq: final_url = f"https://www.ktmmobile.com/event/eventDetail.do?ntcartSeq={seq}"
                 else:
                     href = link_el.get_attribute('href')
                     if href and "javascript" not in href: final_url = href
                     else: continue
-
                 try: title = item.find_element(By.CSS_SELECTOR, ".event-list__title__sub").text.strip()
                 except: title = "제목 없음"
                 img_src = ""
-                try:
-                    img = item.find_element(By.TAG_NAME, "img")
-                    img_src = img.get_attribute("src")
+                try: img_src = item.find_element(By.TAG_NAME, "img").get_attribute("src")
                 except: pass
-
                 cards_data[final_url] = {"title": title, "img": img_src}
             except: continue
     except Exception as e:
@@ -187,71 +161,62 @@ def extract_ktm_mobile(driver):
     return cards_data
 
 # =========================================================
-# [전용 3] 스카이라이프 (★ V44: BS4 강제 파싱 + 스크롤)
+# [전용 3] 스카이라이프 (Undetected + BS4 파싱)
 # =========================================================
 def extract_skylife(driver):
     cards_data = {}
     try:
-        print("    [Skylife] Initial wait (5s)...")
+        print("    [Skylife] 접속 대기중 (5초)...")
         time.sleep(5)
         
-        # 1. 강제 스크롤 (데이터 로딩 유도)
-        print("    [Skylife] Scrolling down...")
+        # 차단 뚫렸는지 확인을 위해 스크롤
         scroll_to_bottom(driver)
-        time.sleep(2)
         
-        # 2. Selenium 탐색 포기 -> 전체 소스 가져오기
+        # HTML 덤프
         html = driver.page_source
+        
+        # [디버깅] 차단 여부 체크
+        if "접속이 원활하지" in html or "Access Denied" in html:
+            print("    🚨 [Warning] 여전히 차단됨. (IP 문제일 가능성 높음)")
+            driver.save_screenshot(os.path.join(REPORT_DIR, f"debug_skylife_blocked_{FILE_TIMESTAMP}.png"))
+            return {}
+        
+        # BS4 파싱 시작
         soup = BeautifulSoup(html, 'html.parser')
-        
-        # 3. 그림자(shadow-sm) 클래스가 있는 카드들 찾기 (네가 준 HTML 기준)
-        # HTML 구조: a > div.shadow-sm
-        # BS4로 'shadow-sm' 클래스를 가진 div의 부모 a 태그를 찾는다.
-        target_divs = soup.find_all("div", class_=lambda x: x and "shadow-sm" in x)
-        
-        print(f"    [Skylife] Found {len(target_divs)} shadow-sm cards via BS4")
+        all_links = soup.find_all('a', href=True)
+        print(f"    [Skylife] Links Found: {len(all_links)}")
         
         count = 0
-        for div in target_divs:
+        for link in all_links:
             try:
-                # 부모가 a 태그인지 확인
-                link = div.find_parent("a")
-                if not link: continue
-                
-                href = link.get('href')
-                if not href or "javascript" in href: continue
-                
-                final_url = urljoin("https://www.skylife.co.kr", href)
-                
-                # 제목 추출 (font-semibold 클래스가 있는 p 태그)
-                title_p = div.find("p", class_=lambda x: x and "font-semibold" in x)
-                title = title_p.get_text().strip() if title_p else "제목 없음"
-                
-                # 이미지 추출
-                img_tag = div.find("img")
-                img_src = ""
-                if img_tag:
-                    if img_tag.get('srcset'):
-                        img_src = img_tag['srcset'].split(" ")[0]
-                    elif img_tag.get('src'):
-                        img_src = img_tag['src']
+                href = link['href']
+                # 이벤트 링크 필터링
+                if "/event/" in href and "javascript" not in href and "category=" not in href:
+                    final_url = urljoin("https://www.skylife.co.kr", href)
+                    if final_url in cards_data: continue
+                    
+                    title = link.get_text().strip()
+                    if not title:
+                        img_tag = link.find('img')
+                        if img_tag and img_tag.get('alt'): title = img_tag['alt']
+                        else: title = "제목 없음"
+                    
+                    img_src = ""
+                    img_tag = link.find('img')
+                    if img_tag:
+                        if img_tag.get('srcset'): img_src = img_tag['srcset'].split(" ")[0]
+                        elif img_tag.get('src'): img_src = img_tag['src']
                         
-                cards_data[final_url] = {"title": title, "img": img_src}
-                count += 1
+                    cards_data[final_url] = {"title": title, "img": img_src}
+                    count += 1
             except: continue
-
-        print(f"    [Skylife] Parsed {count} items successfully")
-        
-        # [디버깅] 만약 0개라면 스크린샷 저장
+            
+        print(f"    [Skylife] Success Count: {count}")
         if count == 0:
-            driver.save_screenshot(os.path.join(REPORT_DIR, f"debug_skylife_fail_{FILE_TIMESTAMP}.png"))
-            print("    📸 [Debug] 0 items found. Screenshot saved.")
+             driver.save_screenshot(os.path.join(REPORT_DIR, f"debug_skylife_empty_{FILE_TIMESTAMP}.png"))
 
     except Exception as e:
-        print(f"    ⚠️ 스카이라이프 추출 실패: {e}")
-        try: driver.save_screenshot(os.path.join(REPORT_DIR, "debug_skylife_error.png"))
-        except: pass
-        
+        print(f"    ⚠️ 스카이라이프 오류: {e}")
     return cards_data
 
 # [기존] Legacy
@@ -263,7 +228,6 @@ def extract_legacy_simple(driver, container_selector, site_name):
         )
         items = container.find_elements(By.TAG_NAME, "li")
         print(f"    [Legacy] Found {len(items)} items in {site_name}")
-
         for item in items:
             try:
                 try: link_el = item.find_element(By.TAG_NAME, "a")
@@ -274,9 +238,7 @@ def extract_legacy_simple(driver, container_selector, site_name):
                 if not href: continue
                 title = item.text.strip().split("\n")[0]
                 img_src = ""
-                try:
-                    img = item.find_element(By.TAG_NAME, "img")
-                    img_src = img.get_attribute("src")
+                try: img_src = item.find_element(By.TAG_NAME, "img").get_attribute("src")
                 except: pass
                 cards_data[href] = {"title": title, "img": img_src}
             except: continue
@@ -303,7 +265,6 @@ def extract_special_js(driver, container_selector, site_name):
             except: items = container.find_elements(By.TAG_NAME, "li")
         
         print(f"    [Special] Found {len(items)} items in {site_name}")
-
         for item in items:
             try:
                 link_el = item if item.tag_name == 'a' else None
@@ -319,7 +280,6 @@ def extract_special_js(driver, container_selector, site_name):
                 elif "SK 7세븐모바일" in site_name and "fnSearchView" in onclick:
                     if m := re.search(r"['\"]([^'\"]+)['\"]", onclick):
                         final_url = f"https://www.sk7mobile.com/bnef/event/eventIngView.do?cntId={m.group(1)}"
-                
                 if not final_url:
                     if href and "javascript" not in href: final_url = href
                     elif href: final_url = href
@@ -327,9 +287,7 @@ def extract_special_js(driver, container_selector, site_name):
                 try: title = item.text.strip().split("\n")[0]
                 except: title = "제목 없음"
                 img_src = ""
-                try:
-                    img = item.find_element(By.TAG_NAME, "img")
-                    img_src = img.get_attribute("src")
+                try: img_src = item.find_element(By.TAG_NAME, "img").get_attribute("src")
                 except: pass
                 cards_data[final_url] = {"title": title, "img": img_src}
             except: continue
@@ -361,9 +319,8 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
         driver.get(target_url)
         if pagination_param == "#": driver.refresh(); time.sleep(2)
         
-        if site_name == "스카이라이프": time.sleep(3) # BS4 로직 내부에서 추가 대기함
-        else: time.sleep(3)
-        
+        # 랜덤 대기 추가
+        time.sleep(random.uniform(3, 5))
         remove_popups(driver)
         scroll_to_bottom(driver)
         
@@ -418,6 +375,7 @@ def update_index_page():
 
 def main():
     try:
+        # Undetected Driver 설정
         driver = setup_driver()
         
         competitors = [
