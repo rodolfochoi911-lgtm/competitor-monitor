@@ -1,7 +1,7 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V39)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V40)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-02-01 (U+, KTM, Skylife HTML 분석 기반 전용 로직 탑재 / 슬랙 전체목록 복구)
+[업데이트] 2026-02-01 (스카이라이프 로딩 대기 시간 연장 & XPath 타겟팅 변경)
 """
 
 import os
@@ -12,7 +12,7 @@ import re
 import traceback
 from datetime import datetime, timedelta, timezone
 import requests
-from urllib.parse import urljoin # 상대경로 처리를 위해 추가
+from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 from selenium import webdriver
@@ -102,16 +102,14 @@ def analyze_content_changes(old_html, new_html):
     return "🎨 레이아웃 변경"
 
 # =========================================================
-# [전용 추출기 1] U+ 유모바일 (HTML 분석 기반)
+# [전용 1] U+ 유모바일
 # =========================================================
 def extract_uplus_mobile(driver):
     cards_data = {}
     try:
-        # 컨테이너: .going-list-wrap
-        container = WebDriverWait(driver, 5).until(
+        container = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, ".going-list-wrap"))
         )
-        # 아이템: a.cardList-wrap (li 아님, 통짜 a태그)
         items = container.find_elements(By.CSS_SELECTOR, "a.cardList-wrap")
         print(f"    [U+ Mobile] Found {len(items)} items")
         
@@ -119,21 +117,14 @@ def extract_uplus_mobile(driver):
             try:
                 href = item.get_attribute('href')
                 if not href or "javascript" in href: continue
-                
-                # 상대경로 처리
                 final_url = urljoin("https://www.uplusumobile.com", href)
-
-                # 제목: .main-title (없으면 .cardList-desc)
                 try: title = item.find_element(By.CSS_SELECTOR, ".main-title").text.strip()
                 except: title = "제목 없음"
-                
-                # 이미지: .cardList-img img
                 img_src = ""
                 try:
                     img = item.find_element(By.CSS_SELECTOR, ".cardList-img img")
                     img_src = img.get_attribute("src")
                 except: pass
-                
                 cards_data[final_url] = {"title": title, "img": img_src}
             except: continue
     except Exception as e:
@@ -141,13 +132,12 @@ def extract_uplus_mobile(driver):
     return cards_data
 
 # =========================================================
-# [전용 추출기 2] KTM 모바일 (ntcartseq 속성 분석)
+# [전용 2] KTM 모바일
 # =========================================================
 def extract_ktm_mobile(driver):
     cards_data = {}
     try:
-        # 컨테이너: .event-list
-        container = WebDriverWait(driver, 5).until(
+        container = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, ".event-list"))
         )
         items = container.find_elements(By.TAG_NAME, "li")
@@ -155,26 +145,17 @@ def extract_ktm_mobile(driver):
         
         for item in items:
             try:
-                # a 태그 찾기
                 link_el = item.find_element(By.TAG_NAME, "a")
-                
-                # 핵심: href가 아니라 'ntcartseq' 속성 값을 가져와야 함
                 seq = link_el.get_attribute("ntcartseq")
-                
                 if seq:
-                    # URL 직접 조립
                     final_url = f"https://www.ktmmobile.com/event/eventDetail.do?ntcartSeq={seq}"
                 else:
-                    # 혹시 href가 있는 경우 대비
                     href = link_el.get_attribute('href')
                     if href and "javascript" not in href: final_url = href
                     else: continue
 
-                # 제목
                 try: title = item.find_element(By.CSS_SELECTOR, ".event-list__title__sub").text.strip()
                 except: title = "제목 없음"
-                
-                # 이미지
                 img_src = ""
                 try:
                     img = item.find_element(By.TAG_NAME, "img")
@@ -188,17 +169,20 @@ def extract_ktm_mobile(driver):
     return cards_data
 
 # =========================================================
-# [전용 추출기 3] 스카이라이프 (Grid 구조 분석)
+# [전용 3] 스카이라이프 (★ 긴급 수정: 대기시간 연장 + XPath)
 # =========================================================
 def extract_skylife(driver):
     cards_data = {}
     try:
-        # 컨테이너: div.grid (Tailwind 클래스 활용)
-        # body > div... 등 복잡한 경로 대신 핵심 클래스로 찾음
-        container = WebDriverWait(driver, 5).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "div.grid.grid-cols-3"))
+        # 1. 로딩 대기 시간 대폭 증가 (20초)
+        # 2. 그림자(shadow-sm) 효과가 있는 카드를 감싼 'a' 태그를 직접 찾음
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.XPATH, "//a[div[contains(@class, 'shadow-sm')]]"))
         )
-        items = container.find_elements(By.TAG_NAME, "a")
+        
+        # 목록 수집
+        items = driver.find_elements(By.XPATH, "//a[div[contains(@class, 'shadow-sm')]]")
+        
         print(f"    [Skylife] Found {len(items)} items")
         
         for item in items:
@@ -208,29 +192,33 @@ def extract_skylife(driver):
                 
                 final_url = urljoin("https://www.skylife.co.kr", href)
 
-                # 제목 (p 태그 중 폰트 굵은 것)
+                # 제목 (p 태그 중 굵은 글씨)
                 try: title = item.find_element(By.CSS_SELECTOR, "p.font-semibold").text.strip()
                 except: title = "제목 없음"
                 
-                # 이미지
+                # 이미지 (srcset 대응)
                 img_src = ""
                 try:
                     img = item.find_element(By.TAG_NAME, "img")
-                    img_src = img.get_attribute("srcset").split(" ")[0] # srcset 처리
-                    if not img_src: img_src = img.get_attribute("src")
+                    srcset = img.get_attribute("srcset")
+                    if srcset:
+                        img_src = srcset.split(" ")[0] # 첫 번째 이미지
+                    else:
+                        img_src = img.get_attribute("src")
                 except: pass
 
                 cards_data[final_url] = {"title": title, "img": img_src}
             except: continue
     except Exception as e:
-        print(f"    ⚠️ 스카이라이프 추출 실패: {e}")
+        # 에러 메시지를 좀 더 자세히 출력 (디버깅용)
+        print(f"    ⚠️ 스카이라이프 추출 실패: {str(e)[:100]}...") 
     return cards_data
 
-# [기존] Legacy Simple (SKT 다이렉트용)
+# [기존] Legacy
 def extract_legacy_simple(driver, container_selector, site_name):
     cards_data = {} 
     try:
-        container = WebDriverWait(driver, 5).until(
+        container = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, container_selector))
         )
         items = container.find_elements(By.TAG_NAME, "li")
@@ -242,21 +230,14 @@ def extract_legacy_simple(driver, container_selector, site_name):
                 except: 
                     if item.tag_name == 'a': link_el = item
                     else: continue
-
                 href = link_el.get_attribute('href')
                 if not href: continue
-
                 title = item.text.strip().split("\n")[0]
-                if not title:
-                    try: title = item.find_element(By.TAG_NAME, "img").get_attribute("alt")
-                    except: title = "제목 없음"
-                
                 img_src = ""
                 try:
                     img = item.find_element(By.TAG_NAME, "img")
                     img_src = img.get_attribute("src")
                 except: pass
-
                 cards_data[href] = {"title": title, "img": img_src}
             except: continue
         return cards_data
@@ -264,14 +245,13 @@ def extract_legacy_simple(driver, container_selector, site_name):
         print(f"    ⚠️ [Legacy] 추출 실패 ({site_name}): {e}")
         return {}
 
-# [기존] JS 해독 로직 (헬로모바일, 7모바일용)
+# [기존] JS 해독
 def extract_special_js(driver, container_selector, site_name):
     cards_data = {} 
     try:
-        container = WebDriverWait(driver, 5).until(
+        container = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, container_selector))
         )
-        
         items = []
         if "헬로모바일" in site_name:
             try: items = container.find_element(By.CSS_SELECTOR, ".event-list").find_elements(By.TAG_NAME, "li")
@@ -290,37 +270,26 @@ def extract_special_js(driver, container_selector, site_name):
                 if not link_el:
                     try: link_el = item.find_element(By.TAG_NAME, "a")
                     except: continue
-                
                 href = link_el.get_attribute('href')
                 onclick = str(link_el.get_attribute('onclick'))
-                
                 final_url = ""
-                
                 if "헬로모바일" in site_name and "fncEventDetail" in onclick:
                     if m := re.search(r"(\d+)", onclick):
                         final_url = f"https://direct.lghellovision.net/event/viewEventDetail.do?idxOfEvent={m.group(1)}"
-                
                 elif "SK 7세븐모바일" in site_name and "fnSearchView" in onclick:
                     if m := re.search(r"['\"]([^'\"]+)['\"]", onclick):
                         final_url = f"https://www.sk7mobile.com/bnef/event/eventIngView.do?cntId={m.group(1)}"
-                
                 if not final_url:
                     if href and "javascript" not in href: final_url = href
                     elif href: final_url = href
-
                 if not final_url: continue
-
-                title = item.text.strip().split("\n")[0]
-                if not title:
-                    try: title = item.find_element(By.TAG_NAME, "img").get_attribute("alt")
-                    except: title = "제목 없음"
-                
+                try: title = item.text.strip().split("\n")[0]
+                except: title = "제목 없음"
                 img_src = ""
                 try:
                     img = item.find_element(By.TAG_NAME, "img")
                     img_src = img.get_attribute("src")
                 except: pass
-
                 cards_data[final_url] = {"title": title, "img": img_src}
             except: continue
         return cards_data
@@ -330,7 +299,7 @@ def extract_special_js(driver, container_selector, site_name):
 
 def extract_single_page_content(driver, selector):
     try:
-        container = WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+        container = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
         return {driver.current_url: {"title": "SKT Air 메인", "img": "", "content": clean_html(container.get_attribute('outerHTML'))}}
     except: return {}
 
@@ -350,11 +319,14 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
             
         driver.get(target_url)
         if pagination_param == "#": driver.refresh(); time.sleep(2)
-        time.sleep(3)
+        
+        # [중요] 스카이라이프는 로딩이 느리므로 추가 대기
+        if site_name == "스카이라이프": time.sleep(5)
+        else: time.sleep(3)
+        
         remove_popups(driver)
         scroll_to_bottom(driver)
         
-        # [핵심] 사이트별 로직 분기 (3대장 복구)
         if site_name == "U+ 유모바일":
             page_data = extract_uplus_mobile(driver)
         elif site_name == "KTM 모바일":
@@ -363,14 +335,14 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
             page_data = extract_skylife(driver)
         elif site_name == "SKT 다이렉트":
             page_data = extract_legacy_simple(driver, target_selector, site_name)
-        else: # 헬로, 7모바일
+        else: 
             page_data = extract_special_js(driver, target_selector, site_name)
         
         if not page_data: break
         
         new_cnt = 0
         for href, info in page_data.items():
-            # 이미 절대경로로 변환된 href가 들어옴
+            if href.startswith('/'): href = urljoin(base_url, href) # 안전장치
             if href not in collected_items:
                 collected_items[href] = info
                 new_cnt += 1
@@ -411,13 +383,9 @@ def main():
         competitors = [
             {"name": "SKT 다이렉트", "url": "https://shop.tworld.co.kr/exhibition/submain", "param": None, "selector": "#wrap > div.container > div > div.event-list-wrap > div > ul"},
             {"name": "SKT Air", "url": "https://sktair-event.com/", "param": None, "selector": "#app > div > section.content"},
-            
-            # [전용 로직 3대장]
             {"name": "U+ 유모바일", "url": "https://www.uplusumobile.com/event-benefit/event/ongoing", "param": None, "selector": ""},
             {"name": "KTM 모바일", "url": "https://www.ktmmobile.com/event/eventBoardList.do", "param": None, "selector": ""},
             {"name": "스카이라이프", "url": "https://www.skylife.co.kr/event?category=mobile", "param": "p", "selector": ""},
-            
-            # [기존 로직]
             {"name": "헬로모바일", "url": "https://direct.lghellovision.net/event/viewEventList.do?returnTab=allli", "param": "#", "selector": ".event-list-wrap"},
             {"name": "SK 7세븐모바일", "url": "https://www.sk7mobile.com/bnef/event/eventIngList.do", "param": None, "selector": ".tb-list.bbs-card"}
         ]
@@ -490,7 +458,6 @@ def main():
         with open(os.path.join(REPORT_DIR, filename), "w", encoding="utf-8") as f: f.write(report_header + report_body)
         update_index_page()
         
-        # 전체 목록 파일 생성
         full_list_html = f"<h1>📂 {DISPLAY_DATE} 전체 목록</h1><hr>"
         for name, pages in today_results.items():
             full_list_html += f"<h3>{name} ({len(pages)}개)</h3><div style='display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:10px;'>"
@@ -502,7 +469,6 @@ def main():
         list_filename = f"list_{FILE_TIMESTAMP}.html"
         with open(os.path.join(REPORT_DIR, list_filename), "w", encoding="utf-8") as f: f.write(full_list_html)
 
-        # 슬랙 전송
         dashboard_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/"
         report_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{filename}"
         list_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{list_filename}"
