@@ -41,28 +41,26 @@ def get_driver():
     driver = webdriver.Chrome(service=service, options=chrome_options)
     return driver
 
-# --- [2. 크롤러: 뽐뿌 (무한 페이징 수정)] ---
+# --- [2. 크롤러: 뽐뿌 (누락 방지 강화)] ---
 def get_ppomppu_posts(driver):
     print("running ppomppu crawler...")
     posts = []
     base_url = "https://www.ppomppu.co.kr/zboard/zboard.php?id=phone&page={}"
-    page = 1
     
-    while True:
+    # 뽐뿌는 중간에 공지 등으로 날짜가 섞일 수 있어, 
+    # 날짜가 지났다고 바로 끊지 않고 10페이지까지는 무조건 훑습니다.
+    for page in range(1, 11): 
         try:
             print(f"  - Ppomppu page {page} scanning...")
             driver.get(base_url.format(page))
-            time.sleep(random.uniform(1.5, 3)) # 속도 약간 상향
+            time.sleep(random.uniform(1.0, 2.0))
             
             soup = BeautifulSoup(driver.page_source, 'html.parser')
             rows = soup.select('tr.baseList')
             
-            if not rows:
-                print("  - No rows found, stopping.")
-                break
+            if not rows: break
             
-            page_data_count = 0
-            stop_crawling = False
+            page_match_count = 0
             
             for row in rows:
                 time_span = row.select_one('.baseList-time')
@@ -73,6 +71,7 @@ def get_ppomppu_posts(driver):
                 raw_date = date_td['title'].split(' ')[0] # 26.02.01
                 post_date = "20" + raw_date.replace('.', '-') # 2026-02-01
                 
+                # 정확히 어제 날짜인 것만 수집
                 if post_date == YESTERDAY_FULL:
                     title_tag = row.select_one('.baseList-title')
                     if not title_tag: continue
@@ -83,29 +82,21 @@ def get_ppomppu_posts(driver):
                     comments = int(row.select_one('.baseList-c').text.strip() or 0)
                     
                     posts.append({'source': 'ppomppu', 'title': title, 'link': link, 'views': views, 'comments': comments})
-                    page_data_count += 1
-                
-                elif post_date < YESTERDAY_FULL:
-                    # 어제보다 이전 날짜가 나오면 종료 (단, 정렬 꼬임 방지를 위해 해당 페이지는 다 훑거나 바로 종료)
-                    stop_crawling = True
+                    page_match_count += 1
             
-            if stop_crawling:
-                print("  - Reached past date. Stopping.")
-                break
-                
-            if page_data_count == 0 and page > 10: # 안전장치
-                print("  - Too many empty pages.")
-                break
-                
-            page += 1
-            
+            # 한 페이지를 다 털었는데 어제 데이터가 하나도 없고, 
+            # 페이지도 5페이지가 넘어가면 그때 그만둠 (안전장치)
+            if page_match_count == 0 and page > 5:
+                # 혹시 모르니 마지막으로 체크: 현재 페이지의 날짜들이 전부 과거인가?
+                # (이 로직은 복잡하니 일단 10페이지 강제 스캔으로 유지)
+                pass
+
         except Exception as e:
             print(f"Err Ppomppu p{page}: {e}")
-            break
             
     return posts
 
-# --- [3. 크롤러: 디시 (무한 페이징 수정)] ---
+# --- [3. 크롤러: 디시 (기존 유지)] ---
 def get_dc_posts(driver):
     print("running dc crawler...")
     posts = []
@@ -116,7 +107,7 @@ def get_dc_posts(driver):
         try:
             print(f"  - DC page {page} scanning...")
             driver.get(base_url.format(page))
-            time.sleep(random.uniform(1.5, 3))
+            time.sleep(random.uniform(1.0, 2.0))
             
             if "디시인사이드입니다" in driver.title and "알뜰폰" not in driver.title:
                 print("  - Blocked by DC.")
@@ -125,8 +116,7 @@ def get_dc_posts(driver):
             soup = BeautifulSoup(driver.page_source, 'html.parser')
             rows = soup.select('tr.ub-content.us-post')
             
-            if not rows:
-                break
+            if not rows: break
                 
             stop_crawling = False
             
@@ -140,13 +130,10 @@ def get_dc_posts(driver):
                 if post_date == YESTERDAY_FULL:
                     title_tag = row.select_one('.gall_tit > a')
                     if not title_tag: continue
-                    
                     title = title_tag.text.strip()
                     link = "https://gall.dcinside.com" + title_tag['href']
-                    
                     views_tag = row.select_one('.gall_count')
                     views = int(views_tag.text.strip().replace(',', '')) if views_tag and views_tag.text.strip().isdigit() else 0
-                    
                     reply_tag = row.select_one('.reply_num')
                     comments = int(reply_tag.text.strip('[]')) if reply_tag else 0
                     
@@ -156,11 +143,10 @@ def get_dc_posts(driver):
                     stop_crawling = True
             
             if stop_crawling:
-                print("  - Reached past date. Stopping.")
                 break
             
             page += 1
-            if page > 50: break # 안전장치
+            if page > 50: break 
             
         except Exception as e:
             print(f"Err DC p{page}: {e}")
@@ -172,17 +158,15 @@ def get_dc_posts(driver):
 def analyze_and_notify(p_posts, d_posts):
     total_posts = p_posts + d_posts
     
-    # 1. 수집 데이터가 없어도 히스토리 파일은 갱신해야 대시보드가 안 깨짐
-    
     df = pd.DataFrame(total_posts)
     p_cnt = len(p_posts)
     d_cnt = len(d_posts)
     
-    # 지진계
-    p_status = "🔴 과열" if p_cnt >= 100 else ("🟢 평온" if p_cnt < 50 else "🟡 활발")
-    d_status = "🔴 과열" if d_cnt >= 80 else ("🟢 평온" if d_cnt < 30 else "🟡 활발")
+    # [수정] 커뮤니티 활성도 기준 (하드코딩 - 추후 평균으로 변경 추천)
+    p_status = "🔴 과열" if p_cnt >= 180 else ("🟢 평온" if p_cnt < 80 else "🟡 활발")
+    d_status = "🔴 과열" if d_cnt >= 600 else ("🟢 평온" if d_cnt < 300 else "🟡 활발")
 
-    # 브랜드 점유율
+    # 브랜드 키워드
     brands = {
         '세븐모바일': ['세븐모바일', '7모', 'sk7', 'sk텔링크'],
         '모빙': ['모빙'],
@@ -193,7 +177,7 @@ def analyze_and_notify(p_posts, d_posts):
         '티플러스': ['티플러스', '티플'],
         '티다이렉트': ['티다이렉트', '티다', 't다이렉트', 't다'],
         'KT엠모바일': ['kt엠모바일', '엠모바일', '엠모', 'ktm'],
-        '스카이라이프': ['스카이라이프', '스카라이프', '스카라', 'skylife'],
+        '스카이라이프': ['스카이라이프', '스카라', 'skylife'],
         '유모바일': ['유모바일', '유모', 'u모바일', '유알모'],
         'SKT_Air': ['skt에어', 'skt air']
     }
@@ -201,18 +185,35 @@ def analyze_and_notify(p_posts, d_posts):
     brand_counts = {}
     sov_lines = []
     
+    # [수정] 세븐모바일 링크 수집용 리스트
+    seven_mobile_links = []
+
     if not df.empty:
         for b_name, keywords in brands.items():
-            cnt = df[df['title'].apply(lambda x: any(k in x.lower() for k in keywords))].shape[0]
-            brand_counts[b_name] = int(cnt) # json 직렬화 위해 int 변환
-            sov_lines.append(f"• {b_name}: {cnt}건")
+            # 해당 브랜드가 포함된 행만 필터링
+            filtered_df = df[df['title'].apply(lambda x: any(k in x.lower() for k in keywords))]
+            cnt = len(filtered_df)
+            brand_counts[b_name] = int(cnt)
+            
+            # 0건이면 리스트에 추가 X (숨김 처리)
+            if cnt > 0:
+                sov_lines.append(f"• {b_name}: {cnt}건")
+                
+                # [수정] 세븐모바일이면 링크 수집
+                if b_name == '세븐모바일':
+                    for _, row in filtered_df.iterrows():
+                        seven_mobile_links.append(f"  └ <{row['link']}|{row['title']}>")
     else:
         for b_name in brands: brand_counts[b_name] = 0
         sov_lines = ["데이터 없음"]
 
     sov_msg = "\n".join(sov_lines)
+    
+    # 세븐모바일 링크가 있다면 메시지에 추가
+    if seven_mobile_links:
+        sov_msg += "\n\n*📌 세븐모바일 언급 게시글:*\n" + "\n".join(seven_mobile_links)
 
-    # Top 5 포맷팅 (불렛 포인트로 변경)
+    # Top 5 포맷팅
     def format_list(sub_df):
         if sub_df.empty: return "없음"
         top5 = sub_df.sort_values(by='views', ascending=False).head(5)
@@ -221,60 +222,47 @@ def analyze_and_notify(p_posts, d_posts):
             title = row['title']
             icon = ""
             if any(k in title for k in ['0원', '무제한', '평생', '대란', '공짜']): icon = " 💰"
-            # 번호 제거하고 불렛 사용
             lines.append(f"• <{row['link']}|{title}>{icon} (👁️ {row['views']:,} / 💬 {row['comments']})")
         
-        # 대시보드용 데이터 반환 (dict list)
         top5_data = top5[['title', 'link', 'views', 'comments']].to_dict('records')
         return "\n".join(lines), top5_data
 
     p_msg, p_top5 = format_list(pd.DataFrame(p_posts))
     d_msg, d_top5 = format_list(pd.DataFrame(d_posts))
 
-    # --- [대시보드 데이터 누적 저장] ---
+    # --- [대시보드 데이터 저장] ---
     history_file = 'data/dashboard_history.json'
     history_data = []
     
-    # 기존 데이터 로드
     if os.path.exists(history_file):
         with open(history_file, 'r', encoding='utf-8') as f:
             try: history_data = json.load(f)
             except: pass
     
-    # 오늘 데이터 추가
     today_entry = {
         "date": YESTERDAY_FULL,
-        "total_volume": {
-            "ppomppu": p_cnt,
-            "dc": d_cnt
-        },
+        "total_volume": { "ppomppu": p_cnt, "dc": d_cnt },
         "brand_sov": brand_counts,
-        "top_posts": {
-            "ppomppu": p_top5,
-            "dc": d_top5
-        }
+        "top_posts": { "ppomppu": p_top5, "dc": d_top5 }
     }
     
-    # 중복 날짜 제거 (덮어쓰기)
     history_data = [d for d in history_data if d['date'] != YESTERDAY_FULL]
     history_data.append(today_entry)
-    # 날짜순 정렬
     history_data.sort(key=lambda x: x['date'])
     
     os.makedirs('data', exist_ok=True)
     with open(history_file, 'w', encoding='utf-8') as f:
         json.dump(history_data, f, ensure_ascii=False, indent=4)
-    print("✅ Dashboard history updated.")
 
-    # --- [슬랙 전송] ---
+    # --- [슬랙 전송: 제목 및 섹션명 수정됨] ---
     slack_text = f"""
-*[📊 {YESTERDAY_FULL} 알뜰폰 시장 모니터링]*
+*[📊 {YESTERDAY_FULL} 알뜰폰 커뮤니티 모니터링]*
 
-*🌡️ 시장 활성도*
+*🌡️ 커뮤니티 활성도*
 • 뽐뿌: {p_status} ({p_cnt}개)
 • 디시: {d_status} ({d_cnt}개)
 
-*📈 브랜드 언급량 (SOV)*
+*📈 브랜드 언급량*
 {sov_msg}
 
 *1️⃣ 뽐뿌 휴대폰포럼 (Top 5)*
@@ -289,7 +277,7 @@ def analyze_and_notify(p_posts, d_posts):
     if SLACK_WEBHOOK_URL:
         requests.post(SLACK_WEBHOOK_URL, json={"text": slack_text})
 
-    # 개별 날짜 백업 저장
+    # 백업 저장
     os.makedirs('data/monitoring', exist_ok=True)
     with open(f'data/monitoring/data_{YESTERDAY_FULL}.json', 'w', encoding='utf-8') as f:
         json.dump(total_posts, f, ensure_ascii=False, indent=4)
