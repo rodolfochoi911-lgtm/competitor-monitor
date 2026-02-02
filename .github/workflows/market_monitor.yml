@@ -1,9 +1,8 @@
 name: Market Monitor (Daily)
 
 on:
-  schedule:
-    # KST 06:44 = UTC 21:44 (전날)
-    - cron: '44 21 * * *'
+schedule:
+    - cron: '59 22 * * *'
   workflow_dispatch: # 수동 실행 버튼 유지
 
 jobs:
