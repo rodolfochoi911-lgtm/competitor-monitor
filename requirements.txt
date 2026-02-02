@@ -4,3 +4,4 @@ beautifulsoup4
 requests
 undetected-chromedriver
 openpyxl
+pandas
