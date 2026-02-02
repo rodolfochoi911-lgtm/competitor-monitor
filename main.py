@@ -1,7 +1,7 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V41)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V43)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-02-01 (스카이라이프 'Broad Crawling' 적용 / 유모바일 & KTM 유지)
+[업데이트] 2026-02-01 (스카이라이프 디버깅 스크린샷 추가 + BeautifulSoup 강력 파싱)
 """
 
 import os
@@ -44,16 +44,34 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(REPORT_DIR, exist_ok=True)
 
 def setup_driver():
-    print("🚗 브라우저 드라이버 설정 중...")
+    print("🚗 브라우저 드라이버 설정 중 (보안 강화 모드)...")
     chrome_options = Options()
+    
+    # [주의] 로컬 PC에서 화면을 직접 보고 싶으면 아래 'headless' 줄 앞에 #을 붙여서 주석 처리해!
     chrome_options.add_argument("--headless") 
+    
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
     
+    # [봇 탐지 우회 설정]
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option("useAutomationExtension", False)
+
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
+    
+    # [봇 탐지 우회 스크립트 실행]
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+        "source": """
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            })
+        """
+    })
+    
     return driver
 
 def remove_popups(driver):
@@ -169,56 +187,70 @@ def extract_ktm_mobile(driver):
     return cards_data
 
 # =========================================================
-# [전용 3] 스카이라이프 (★ Broad Crawling 적용)
+# [전용 3] 스카이라이프 (★ 디버깅 & BS4 파싱 적용)
 # =========================================================
 def extract_skylife(driver):
     cards_data = {}
     try:
-        # 1. 20초 대기: 무언가 뜰 때까지 기다림 (a 태그 기준)
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.TAG_NAME, "a"))
-        )
+        # 1. 넉넉한 대기 시간
+        print("    [Skylife] Waiting for content load...")
+        time.sleep(7)
         
-        # 2. 모든 <a> 태그 수집
-        all_links = driver.find_elements(By.TAG_NAME, "a")
-        print(f"    [Skylife] Scanned {len(all_links)} links...")
+        # 2. [디버깅] 현재 화면 스크린샷 저장
+        # (GitHub Actions artifact 등에서 확인 가능)
+        screenshot_path = os.path.join(REPORT_DIR, f"debug_skylife_{FILE_TIMESTAMP}.png")
+        driver.save_screenshot(screenshot_path)
+        print(f"    📸 [Debug] Screenshot saved to: {screenshot_path}")
+        
+        # 3. Selenium 대신 BeautifulSoup으로 전체 소스 파싱 (훨씬 강력함)
+        page_source = driver.page_source
+        soup = BeautifulSoup(page_source, 'html.parser')
+        
+        # 4. 모든 <a> 태그 수집
+        all_links = soup.find_all('a', href=True)
+        print(f"    [Skylife] BS4 scanned {len(all_links)} raw links")
         
         count = 0
         for link in all_links:
             try:
-                # 3. URL 필터링: '/event/'가 포함된 링크만 찾음 (이게 핵심)
-                href = link.get_attribute('href')
-                if not href or "/event/" not in href or "javascript" in href: continue
+                href = link['href']
                 
-                # 중복 방지
-                final_url = urljoin("https://www.skylife.co.kr", href)
-                if final_url in cards_data: continue
+                # 5. 필터링: /event/ 포함 & javascript 제외 & category 필터 제외
+                if "/event/" in href and "javascript" not in href and "category=" not in href:
+                    final_url = urljoin("https://www.skylife.co.kr", href)
+                    
+                    if final_url in cards_data: continue
+                    
+                    # 제목 추출 (텍스트 or 이미지 alt)
+                    title = link.get_text().strip()
+                    if not title:
+                        img_tag = link.find('img')
+                        if img_tag and img_tag.get('alt'):
+                            title = img_tag['alt']
+                        else:
+                            title = "제목 없음"
+                            
+                    # 이미지 추출
+                    img_src = ""
+                    img_tag = link.find('img')
+                    if img_tag:
+                        if img_tag.get('srcset'):
+                            img_src = img_tag['srcset'].split(" ")[0]
+                        elif img_tag.get('src'):
+                            img_src = img_tag['src']
 
-                # 제목 추출 시도 (텍스트 -> p태그 -> 이미지 alt)
-                title = link.text.strip()
-                if not title:
-                    try: title = link.find_element(By.CSS_SELECTOR, "p").text.strip()
-                    except: pass
-                if not title:
-                    try: title = link.find_element(By.TAG_NAME, "img").get_attribute("alt")
-                    except: title = "제목 없음"
-                
-                # 이미지 추출
-                img_src = ""
-                try:
-                    img = link.find_element(By.TAG_NAME, "img")
-                    img_src = img.get_attribute("srcset").split(" ")[0]
-                    if not img_src: img_src = img.get_attribute("src")
-                except: pass
-
-                cards_data[final_url] = {"title": title, "img": img_src}
-                count += 1
+                    cards_data[final_url] = {"title": title, "img": img_src}
+                    count += 1
             except: continue
             
-        print(f"    [Skylife] Validated {count} event items")
+        print(f"    [Skylife] Successfully scraped {count} items via BS4")
         
     except Exception as e:
         print(f"    ⚠️ 스카이라이프 추출 실패: {e}")
+        # 실패 시에도 스크린샷 한 번 더
+        try: driver.save_screenshot(os.path.join(REPORT_DIR, "debug_skylife_fail.png"))
+        except: pass
+        
     return cards_data
 
 # [기존] Legacy
@@ -328,7 +360,6 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
         driver.get(target_url)
         if pagination_param == "#": driver.refresh(); time.sleep(2)
         
-        # [중요] 스카이라이프 5초 대기 (데이터 로딩용)
         if site_name == "스카이라이프": time.sleep(5)
         else: time.sleep(3)
         
@@ -350,7 +381,7 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
         
         new_cnt = 0
         for href, info in page_data.items():
-            if href.startswith('/'): href = urljoin(base_url, href) # 안전장치
+            if href.startswith('/'): href = urljoin(base_url, href) 
             if href not in collected_items:
                 collected_items[href] = info
                 new_cnt += 1
@@ -391,13 +422,9 @@ def main():
         competitors = [
             {"name": "SKT 다이렉트", "url": "https://shop.tworld.co.kr/exhibition/submain", "param": None, "selector": "#wrap > div.container > div > div.event-list-wrap > div > ul"},
             {"name": "SKT Air", "url": "https://sktair-event.com/", "param": None, "selector": "#app > div > section.content"},
-            
-            # [전용 로직 3대장]
             {"name": "U+ 유모바일", "url": "https://www.uplusumobile.com/event-benefit/event/ongoing", "param": None, "selector": ""},
             {"name": "KTM 모바일", "url": "https://www.ktmmobile.com/event/eventBoardList.do", "param": None, "selector": ""},
             {"name": "스카이라이프", "url": "https://www.skylife.co.kr/event?category=mobile", "param": "p", "selector": ""},
-            
-            # [기존 로직]
             {"name": "헬로모바일", "url": "https://direct.lghellovision.net/event/viewEventList.do?returnTab=allli", "param": "#", "selector": ".event-list-wrap"},
             {"name": "SK 7세븐모바일", "url": "https://www.sk7mobile.com/bnef/event/eventIngList.do", "param": None, "selector": ".tb-list.bbs-card"}
         ]
