@@ -22,8 +22,8 @@ TZ_KST = pytz.timezone('Asia/Seoul')
 NOW = datetime.datetime.now(TZ_KST)
 YESTERDAY = NOW - datetime.timedelta(days=1)
 
-YESTERDAY_FULL = YESTERDAY.strftime('%Y-%m-%d')
-YESTERDAY_DOT = YESTERDAY.strftime('%y.%m.%d')
+YESTERDAY_FULL = YESTERDAY.strftime('%Y-%m-%d') # 2026-02-01
+YESTERDAY_DOT = YESTERDAY.strftime('%y.%m.%d')   # 25.02.01
 
 print(f"📅 타겟 날짜: {YESTERDAY_FULL}")
 
@@ -40,7 +40,7 @@ def get_driver():
     driver = webdriver.Chrome(service=service, options=chrome_options)
     return driver
 
-# --- [2. 크롤러: 뽐뿌 (20페이지 강력 스캔)] ---
+# --- [2. 크롤러: 뽐뿌 (하이브리드 정밀 수집)] ---
 def get_ppomppu_posts(driver):
     print("running ppomppu crawler...")
     posts = []
@@ -60,18 +60,31 @@ def get_ppomppu_posts(driver):
                 title_elem = row.select_one('font.list_title') or row.select_one('a')
                 if not title_elem: continue
                 
-                # 날짜 추출 (title 속성 우선)
-                date_td = row.find('td', title=re.compile(r'\d{2}\.\d{2}\.\d{2}'))
+                # [수정] 날짜 추출 우선순위 강화 (정확도 향상)
                 post_date = ""
                 
-                if date_td:
-                    raw_date = date_td['title'].split(' ')[0]
-                    post_date = "20" + raw_date.replace('.', '-')
-                else:
-                    date_text_match = re.search(r'\d{2}\.\d{2}\.\d{2}', row.text)
-                    if date_text_match:
-                        post_date = "20" + date_text_match.group().replace('.', '-')
+                # 1. .baseList-time 클래스가 있다면 가장 정확 (부모 td의 title 속성)
+                time_span = row.select_one('.baseList-time')
+                if time_span:
+                    date_td = time_span.find_parent('td')
+                    if date_td and date_td.get('title'):
+                        raw_date = date_td['title'].split(' ')[0]
+                        post_date = "20" + raw_date.replace('.', '-')
                 
+                # 2. 없다면 title 속성 직접 검색
+                if not post_date:
+                    date_td = row.find('td', title=re.compile(r'\d{2}\.\d{2}\.\d{2}'))
+                    if date_td:
+                        raw_date = date_td['title'].split(' ')[0]
+                        post_date = "20" + raw_date.replace('.', '-')
+                
+                # 3. 그래도 없다면 텍스트 정규식 (최후의 수단)
+                if not post_date:
+                    date_match = re.search(r'\d{2}\.\d{2}\.\d{2}', row.text)
+                    if date_match:
+                        post_date = "20" + date_match.group().replace('.', '-')
+
+                # 날짜 일치 확인
                 if post_date == YESTERDAY_FULL:
                     link_elem = row.select_one('a[href*="view.php"]')
                     if not link_elem: continue
@@ -79,15 +92,22 @@ def get_ppomppu_posts(driver):
                     title = title_elem.text.strip()
                     link = "https://www.ppomppu.co.kr/zboard/" + link_elem['href']
                     
-                    # 조회수/댓글수 추출
-                    text_content = row.text
-                    try:
-                        views_match = re.findall(r'\d{1,3}(?:,\d{3})*', text_content)
-                        views = int(views_match[-1].replace(',', '')) if views_match else 0
-                        comment_span = row.select_one('.list_comment2') or row.select_one('.baseList-c')
-                        comments = int(comment_span.text.strip()) if comment_span else 0
-                    except:
-                        views, comments = 0, 0
+                    # [수정] 조회수/댓글수 우선순위 강화 (숫자 꼬임 방지)
+                    views, comments = 0, 0
+                    
+                    # 1. 클래스로 찾기 (가장 정확)
+                    view_tag = row.select_one('.baseList-views')
+                    cmt_tag = row.select_one('.baseList-c') or row.select_one('.list_comment2')
+                    
+                    if view_tag:
+                        views = int(view_tag.text.strip().replace(',', '') or 0)
+                    else:
+                        # 2. 텍스트에서 찾기 (리스크 있음)
+                        views_match = re.findall(r'\d{1,3}(?:,\d{3})*', row.text)
+                        if views_match: views = int(views_match[-1].replace(',', ''))
+                    
+                    if cmt_tag:
+                        comments = int(cmt_tag.text.strip().replace(',', '') or 0)
 
                     posts.append({'source': 'ppomppu', 'title': title, 'link': link, 'views': views, 'comments': comments})
                     valid_cnt_in_page += 1
@@ -101,7 +121,7 @@ def get_ppomppu_posts(driver):
             
     return posts
 
-# --- [3. 크롤러: 디시] ---
+# --- [3. 크롤러: 디시 (기존 유지)] ---
 def get_dc_posts(driver):
     print("running dc crawler...")
     posts = []
@@ -157,6 +177,8 @@ def extract_top_keywords(df):
     all_titles = " ".join(df['title'].tolist())
     all_titles = re.sub(r'[^\w\s]', ' ', all_titles)
     words = all_titles.split()
+    
+    # [수정] 불용어 추가 (있음, 알뜰 등)
     stopwords = set([
         '질문', '후기', '정보', '요금제', '알뜰폰', '추천', '있나요', '나요', '가요', '건가요',
         '오늘', '내일', '이번달', '2월', '1월', '근데', '진짜', '혹시', '아니', '너무',
@@ -165,7 +187,8 @@ def extract_top_keywords(df):
         'skt', 'kt', 'lg', 'lgu', 'sk', 'kt망', 'lgu+', 'u+', 'sk망', '헬로',
         'vs', '이거', '저거', '그거', '뭐야', '시발', '존나', 'ㅋㅋ', 'ㅎㅎ', 'ㅠㅠ',
         '문의', '질문좀', '대해', '관련', '어떤가요', '무슨', '어디', '어떻게',
-        '선택', '위약금', '조건', '정책', '비교', '변경', '이동', '사용', '가입', '해지'
+        '선택', '위약금', '조건', '정책', '비교', '변경', '이동', '사용', '가입', '해지',
+        '있음', '알뜰', '요금', '번호', '이동', '통신사' # 추가된 노이즈
     ])
     filtered_words = [w for w in words if len(w) >= 2 and w.lower() not in stopwords]
     return Counter(filtered_words).most_common(10)
@@ -183,7 +206,7 @@ def analyze_and_notify(p_posts, d_posts):
     p_status = "🔴 과열" if p_cnt >= 180 else ("🟢 평온" if p_cnt < 80 else "🟡 활발")
     d_status = "🔴 과열" if d_cnt >= 600 else ("🟢 평온" if d_cnt < 300 else "🟡 활발")
 
-    # 1. 브랜드 점유율 (SOV)
+    # 1. 브랜드 점유율 (세븐모바일 고정 노출 로직 추가)
     brands = {
         '세븐모바일': ['세븐모바일', '7모', 'sk7', 'sk텔링크'],
         '모빙': ['모빙'],
@@ -200,20 +223,30 @@ def analyze_and_notify(p_posts, d_posts):
     }
     
     brand_counts = {}
-    sov_lines = []
     seven_links = [] # 세븐모바일 링크 수집
 
+    # 카운팅 먼저 수행
     for b_name, keywords in brands.items():
         filtered = df[df['title'].apply(lambda x: any(k in x.lower() for k in keywords))]
-        cnt = len(filtered)
-        brand_counts[b_name] = int(cnt)
+        brand_counts[b_name] = int(len(filtered))
+        
+        if b_name == '세븐모바일' and len(filtered) > 0:
+            for _, row in filtered.iterrows():
+                seven_links.append(f"  └ <{row['link']}|{row['title']}>")
+
+    # [수정] 출력 순서 제어 (세븐모바일 1순위, 나머지 >0 건만)
+    sov_lines = []
+    
+    # 1. 세븐모바일 무조건 출력
+    seven_cnt = brand_counts.get('세븐모바일', 0)
+    sov_lines.append(f"• 세븐모바일: {seven_cnt}건")
+    
+    # 2. 나머지 브랜드 (0건이면 제외)
+    for b_name, cnt in brand_counts.items():
+        if b_name == '세븐모바일': continue
         if cnt > 0:
             sov_lines.append(f"• {b_name}: {cnt}건")
-            if b_name == '세븐모바일':
-                for _, row in filtered.iterrows():
-                    seven_links.append(f"  └ <{row['link']}|{row['title']}>")
-                    
-    if not sov_lines: sov_lines = ["언급 없음"]
+
     sov_msg = "\n".join(sov_lines)
 
     # 2. 핫 키워드 (Top 10)
@@ -239,7 +272,7 @@ def analyze_and_notify(p_posts, d_posts):
     p_msg, p_top5 = format_list(pd.DataFrame(p_posts))
     d_msg, d_top5 = format_list(pd.DataFrame(d_posts))
 
-    # --- [대시보드 데이터 저장] ---
+    # 데이터 저장
     history_file = 'data/dashboard_history.json'
     history_data = []
     if os.path.exists(history_file):
@@ -250,8 +283,8 @@ def analyze_and_notify(p_posts, d_posts):
     today_entry = {
         "date": YESTERDAY_FULL,
         "total_volume": { "ppomppu": p_cnt, "dc": d_cnt },
-        "brand_sov": brand_counts,       # 브랜드 데이터 포함
-        "top_keywords": dict(top_keywords), # 키워드 데이터 포함
+        "brand_sov": brand_counts,
+        "top_keywords": dict(top_keywords),
         "top_posts": { "ppomppu": p_top5, "dc": d_top5 }
     }
     
@@ -263,7 +296,7 @@ def analyze_and_notify(p_posts, d_posts):
     with open(history_file, 'w', encoding='utf-8') as f:
         json.dump(history_data, f, ensure_ascii=False, indent=4)
 
-    # --- [슬랙 전송] ---
+    # 슬랙 전송
     seven_block = ""
     if seven_links:
         seven_block = f"\n*📌 세븐모바일 언급 ({len(seven_links)}건)*\n" + "\n".join(seven_links)
