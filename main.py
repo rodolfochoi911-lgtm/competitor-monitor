@@ -1,7 +1,7 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V40)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V41)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-02-01 (스카이라이프 로딩 대기 시간 연장 & XPath 타겟팅 변경)
+[업데이트] 2026-02-01 (스카이라이프 'Broad Crawling' 적용 / 유모바일 & KTM 유지)
 """
 
 import os
@@ -169,49 +169,56 @@ def extract_ktm_mobile(driver):
     return cards_data
 
 # =========================================================
-# [전용 3] 스카이라이프 (★ 긴급 수정: 대기시간 연장 + XPath)
+# [전용 3] 스카이라이프 (★ Broad Crawling 적용)
 # =========================================================
 def extract_skylife(driver):
     cards_data = {}
     try:
-        # 1. 로딩 대기 시간 대폭 증가 (20초)
-        # 2. 그림자(shadow-sm) 효과가 있는 카드를 감싼 'a' 태그를 직접 찾음
+        # 1. 20초 대기: 무언가 뜰 때까지 기다림 (a 태그 기준)
         WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.XPATH, "//a[div[contains(@class, 'shadow-sm')]]"))
+            EC.presence_of_element_located((By.TAG_NAME, "a"))
         )
         
-        # 목록 수집
-        items = driver.find_elements(By.XPATH, "//a[div[contains(@class, 'shadow-sm')]]")
+        # 2. 모든 <a> 태그 수집
+        all_links = driver.find_elements(By.TAG_NAME, "a")
+        print(f"    [Skylife] Scanned {len(all_links)} links...")
         
-        print(f"    [Skylife] Found {len(items)} items")
-        
-        for item in items:
+        count = 0
+        for link in all_links:
             try:
-                href = item.get_attribute('href')
-                if not href or "javascript" in href: continue
+                # 3. URL 필터링: '/event/'가 포함된 링크만 찾음 (이게 핵심)
+                href = link.get_attribute('href')
+                if not href or "/event/" not in href or "javascript" in href: continue
                 
+                # 중복 방지
                 final_url = urljoin("https://www.skylife.co.kr", href)
+                if final_url in cards_data: continue
 
-                # 제목 (p 태그 중 굵은 글씨)
-                try: title = item.find_element(By.CSS_SELECTOR, "p.font-semibold").text.strip()
-                except: title = "제목 없음"
+                # 제목 추출 시도 (텍스트 -> p태그 -> 이미지 alt)
+                title = link.text.strip()
+                if not title:
+                    try: title = link.find_element(By.CSS_SELECTOR, "p").text.strip()
+                    except: pass
+                if not title:
+                    try: title = link.find_element(By.TAG_NAME, "img").get_attribute("alt")
+                    except: title = "제목 없음"
                 
-                # 이미지 (srcset 대응)
+                # 이미지 추출
                 img_src = ""
                 try:
-                    img = item.find_element(By.TAG_NAME, "img")
-                    srcset = img.get_attribute("srcset")
-                    if srcset:
-                        img_src = srcset.split(" ")[0] # 첫 번째 이미지
-                    else:
-                        img_src = img.get_attribute("src")
+                    img = link.find_element(By.TAG_NAME, "img")
+                    img_src = img.get_attribute("srcset").split(" ")[0]
+                    if not img_src: img_src = img.get_attribute("src")
                 except: pass
 
                 cards_data[final_url] = {"title": title, "img": img_src}
+                count += 1
             except: continue
+            
+        print(f"    [Skylife] Validated {count} event items")
+        
     except Exception as e:
-        # 에러 메시지를 좀 더 자세히 출력 (디버깅용)
-        print(f"    ⚠️ 스카이라이프 추출 실패: {str(e)[:100]}...") 
+        print(f"    ⚠️ 스카이라이프 추출 실패: {e}")
     return cards_data
 
 # [기존] Legacy
@@ -279,6 +286,7 @@ def extract_special_js(driver, container_selector, site_name):
                 elif "SK 7세븐모바일" in site_name and "fnSearchView" in onclick:
                     if m := re.search(r"['\"]([^'\"]+)['\"]", onclick):
                         final_url = f"https://www.sk7mobile.com/bnef/event/eventIngView.do?cntId={m.group(1)}"
+                
                 if not final_url:
                     if href and "javascript" not in href: final_url = href
                     elif href: final_url = href
@@ -320,7 +328,7 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
         driver.get(target_url)
         if pagination_param == "#": driver.refresh(); time.sleep(2)
         
-        # [중요] 스카이라이프는 로딩이 느리므로 추가 대기
+        # [중요] 스카이라이프 5초 대기 (데이터 로딩용)
         if site_name == "스카이라이프": time.sleep(5)
         else: time.sleep(3)
         
@@ -383,9 +391,13 @@ def main():
         competitors = [
             {"name": "SKT 다이렉트", "url": "https://shop.tworld.co.kr/exhibition/submain", "param": None, "selector": "#wrap > div.container > div > div.event-list-wrap > div > ul"},
             {"name": "SKT Air", "url": "https://sktair-event.com/", "param": None, "selector": "#app > div > section.content"},
+            
+            # [전용 로직 3대장]
             {"name": "U+ 유모바일", "url": "https://www.uplusumobile.com/event-benefit/event/ongoing", "param": None, "selector": ""},
             {"name": "KTM 모바일", "url": "https://www.ktmmobile.com/event/eventBoardList.do", "param": None, "selector": ""},
             {"name": "스카이라이프", "url": "https://www.skylife.co.kr/event?category=mobile", "param": "p", "selector": ""},
+            
+            # [기존 로직]
             {"name": "헬로모바일", "url": "https://direct.lghellovision.net/event/viewEventList.do?returnTab=allli", "param": "#", "selector": ".event-list-wrap"},
             {"name": "SK 7세븐모바일", "url": "https://www.sk7mobile.com/bnef/event/eventIngList.do", "param": None, "selector": ".tb-list.bbs-card"}
         ]
