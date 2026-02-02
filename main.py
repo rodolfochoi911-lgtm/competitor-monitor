@@ -1,7 +1,7 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V46)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V47)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-02-01 (스카이라이프 뚫기용 'Undetected Chromedriver' 적용)
+[업데이트] 2026-02-01 (언디텍티드 크롬 버전 충돌 해결: version_main=144 고정)
 """
 
 import os
@@ -15,7 +15,7 @@ import requests
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
-# [핵심 변경] 일반 Selenium 대신 undetected_chromedriver 사용
+# [핵심] 언디텍티드 크롬
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -42,18 +42,17 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(REPORT_DIR, exist_ok=True)
 
 def setup_driver():
-    print("🚗 [V46] 언디텍티드(Undetected) 드라이버 설정 중...")
+    print("🚗 [V47] 언디텍티드(Undetected) 드라이버 설정 (v144 고정)...")
     
     options = uc.ChromeOptions()
-    # [중요] 깃허브 액션(서버)에서는 headless 필수
     options.add_argument("--headless=new") 
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
-    options.add_argument("--lang=ko_KR") # 한국어 설정
+    options.add_argument("--lang=ko_KR")
     
-    # version_main=None으로 설정하면 설치된 크롬 버전을 자동 감지함
-    driver = uc.Chrome(options=options, version_main=None)
+    # [핵심 수정] version_main=144 로 강제 고정 (서버 크롬 버전에 맞춤)
+    driver = uc.Chrome(options=options, version_main=144)
     
     return driver
 
@@ -169,19 +168,16 @@ def extract_skylife(driver):
         print("    [Skylife] 접속 대기중 (5초)...")
         time.sleep(5)
         
-        # 차단 뚫렸는지 확인을 위해 스크롤
         scroll_to_bottom(driver)
         
-        # HTML 덤프
         html = driver.page_source
         
-        # [디버깅] 차단 여부 체크
+        # 차단 여부 체크 (디버깅)
         if "접속이 원활하지" in html or "Access Denied" in html:
-            print("    🚨 [Warning] 여전히 차단됨. (IP 문제일 가능성 높음)")
+            print("    🚨 [Warning] 여전히 차단됨.")
             driver.save_screenshot(os.path.join(REPORT_DIR, f"debug_skylife_blocked_{FILE_TIMESTAMP}.png"))
             return {}
         
-        # BS4 파싱 시작
         soup = BeautifulSoup(html, 'html.parser')
         all_links = soup.find_all('a', href=True)
         print(f"    [Skylife] Links Found: {len(all_links)}")
@@ -190,7 +186,6 @@ def extract_skylife(driver):
         for link in all_links:
             try:
                 href = link['href']
-                # 이벤트 링크 필터링
                 if "/event/" in href and "javascript" not in href and "category=" not in href:
                     final_url = urljoin("https://www.skylife.co.kr", href)
                     if final_url in cards_data: continue
@@ -254,16 +249,7 @@ def extract_special_js(driver, container_selector, site_name):
         container = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, container_selector))
         )
-        items = []
-        if "헬로모바일" in site_name:
-            try: items = container.find_element(By.CSS_SELECTOR, ".event-list").find_elements(By.TAG_NAME, "li")
-            except: items = container.find_elements(By.TAG_NAME, "li")
-        elif "SK 7세븐모바일" in site_name:
-            try: 
-                groups = container.find_elements(By.CSS_SELECTOR, ".event-group")
-                for g in groups: items.extend(g.find_elements(By.TAG_NAME, "li"))
-            except: items = container.find_elements(By.TAG_NAME, "li")
-        
+        items = container.find_elements(By.TAG_NAME, "li")
         print(f"    [Special] Found {len(items)} items in {site_name}")
         for item in items:
             try:
@@ -319,7 +305,6 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
         driver.get(target_url)
         if pagination_param == "#": driver.refresh(); time.sleep(2)
         
-        # 랜덤 대기 추가
         time.sleep(random.uniform(3, 5))
         remove_popups(driver)
         scroll_to_bottom(driver)
@@ -375,7 +360,6 @@ def update_index_page():
 
 def main():
     try:
-        # Undetected Driver 설정
         driver = setup_driver()
         
         competitors = [
