@@ -1,7 +1,7 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V43)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V44)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-02-01 (스카이라이프 디버깅 스크린샷 추가 + BeautifulSoup 강력 파싱)
+[업데이트] 2026-02-01 (스카이라이프 Selenium 탐색 포기 -> BS4 강제 파싱 전환)
 """
 
 import os
@@ -44,17 +44,17 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(REPORT_DIR, exist_ok=True)
 
 def setup_driver():
-    print("🚗 브라우저 드라이버 설정 중 (보안 강화 모드)...")
+    print("🚗 브라우저 드라이버 설정 중...")
     chrome_options = Options()
     
-    # [주의] 로컬 PC에서 화면을 직접 보고 싶으면 아래 'headless' 줄 앞에 #을 붙여서 주석 처리해!
+    # [주의] 로컬 테스트 시에는 아래 headless 주석 처리
     chrome_options.add_argument("--headless") 
     
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
     
-    # [봇 탐지 우회 설정]
+    # [봇 탐지 우회]
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -63,7 +63,7 @@ def setup_driver():
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
     
-    # [봇 탐지 우회 스크립트 실행]
+    # [Navigator 속임수]
     driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
         "source": """
             Object.defineProperty(navigator, 'webdriver', {
@@ -85,7 +85,7 @@ def remove_popups(driver):
 def scroll_to_bottom(driver):
     try:
         last_height = driver.execute_script("return document.body.scrollHeight")
-        for _ in range(5): 
+        for _ in range(3): # 3번만 내려봄
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(1)
             new_height = driver.execute_script("return document.body.scrollHeight")
@@ -187,68 +187,69 @@ def extract_ktm_mobile(driver):
     return cards_data
 
 # =========================================================
-# [전용 3] 스카이라이프 (★ 디버깅 & BS4 파싱 적용)
+# [전용 3] 스카이라이프 (★ V44: BS4 강제 파싱 + 스크롤)
 # =========================================================
 def extract_skylife(driver):
     cards_data = {}
     try:
-        # 1. 넉넉한 대기 시간
-        print("    [Skylife] Waiting for content load...")
-        time.sleep(7)
+        print("    [Skylife] Initial wait (5s)...")
+        time.sleep(5)
         
-        # 2. [디버깅] 현재 화면 스크린샷 저장
-        # (GitHub Actions artifact 등에서 확인 가능)
-        screenshot_path = os.path.join(REPORT_DIR, f"debug_skylife_{FILE_TIMESTAMP}.png")
-        driver.save_screenshot(screenshot_path)
-        print(f"    📸 [Debug] Screenshot saved to: {screenshot_path}")
+        # 1. 강제 스크롤 (데이터 로딩 유도)
+        print("    [Skylife] Scrolling down...")
+        scroll_to_bottom(driver)
+        time.sleep(2)
         
-        # 3. Selenium 대신 BeautifulSoup으로 전체 소스 파싱 (훨씬 강력함)
-        page_source = driver.page_source
-        soup = BeautifulSoup(page_source, 'html.parser')
+        # 2. Selenium 탐색 포기 -> 전체 소스 가져오기
+        html = driver.page_source
+        soup = BeautifulSoup(html, 'html.parser')
         
-        # 4. 모든 <a> 태그 수집
-        all_links = soup.find_all('a', href=True)
-        print(f"    [Skylife] BS4 scanned {len(all_links)} raw links")
+        # 3. 그림자(shadow-sm) 클래스가 있는 카드들 찾기 (네가 준 HTML 기준)
+        # HTML 구조: a > div.shadow-sm
+        # BS4로 'shadow-sm' 클래스를 가진 div의 부모 a 태그를 찾는다.
+        target_divs = soup.find_all("div", class_=lambda x: x and "shadow-sm" in x)
+        
+        print(f"    [Skylife] Found {len(target_divs)} shadow-sm cards via BS4")
         
         count = 0
-        for link in all_links:
+        for div in target_divs:
             try:
-                href = link['href']
+                # 부모가 a 태그인지 확인
+                link = div.find_parent("a")
+                if not link: continue
                 
-                # 5. 필터링: /event/ 포함 & javascript 제외 & category 필터 제외
-                if "/event/" in href and "javascript" not in href and "category=" not in href:
-                    final_url = urljoin("https://www.skylife.co.kr", href)
-                    
-                    if final_url in cards_data: continue
-                    
-                    # 제목 추출 (텍스트 or 이미지 alt)
-                    title = link.get_text().strip()
-                    if not title:
-                        img_tag = link.find('img')
-                        if img_tag and img_tag.get('alt'):
-                            title = img_tag['alt']
-                        else:
-                            title = "제목 없음"
-                            
-                    # 이미지 추출
-                    img_src = ""
-                    img_tag = link.find('img')
-                    if img_tag:
-                        if img_tag.get('srcset'):
-                            img_src = img_tag['srcset'].split(" ")[0]
-                        elif img_tag.get('src'):
-                            img_src = img_tag['src']
-
-                    cards_data[final_url] = {"title": title, "img": img_src}
-                    count += 1
+                href = link.get('href')
+                if not href or "javascript" in href: continue
+                
+                final_url = urljoin("https://www.skylife.co.kr", href)
+                
+                # 제목 추출 (font-semibold 클래스가 있는 p 태그)
+                title_p = div.find("p", class_=lambda x: x and "font-semibold" in x)
+                title = title_p.get_text().strip() if title_p else "제목 없음"
+                
+                # 이미지 추출
+                img_tag = div.find("img")
+                img_src = ""
+                if img_tag:
+                    if img_tag.get('srcset'):
+                        img_src = img_tag['srcset'].split(" ")[0]
+                    elif img_tag.get('src'):
+                        img_src = img_tag['src']
+                        
+                cards_data[final_url] = {"title": title, "img": img_src}
+                count += 1
             except: continue
-            
-        print(f"    [Skylife] Successfully scraped {count} items via BS4")
+
+        print(f"    [Skylife] Parsed {count} items successfully")
         
+        # [디버깅] 만약 0개라면 스크린샷 저장
+        if count == 0:
+            driver.save_screenshot(os.path.join(REPORT_DIR, f"debug_skylife_fail_{FILE_TIMESTAMP}.png"))
+            print("    📸 [Debug] 0 items found. Screenshot saved.")
+
     except Exception as e:
         print(f"    ⚠️ 스카이라이프 추출 실패: {e}")
-        # 실패 시에도 스크린샷 한 번 더
-        try: driver.save_screenshot(os.path.join(REPORT_DIR, "debug_skylife_fail.png"))
+        try: driver.save_screenshot(os.path.join(REPORT_DIR, "debug_skylife_error.png"))
         except: pass
         
     return cards_data
@@ -360,7 +361,7 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
         driver.get(target_url)
         if pagination_param == "#": driver.refresh(); time.sleep(2)
         
-        if site_name == "스카이라이프": time.sleep(5)
+        if site_name == "스카이라이프": time.sleep(3) # BS4 로직 내부에서 추가 대기함
         else: time.sleep(3)
         
         remove_popups(driver)
