@@ -33,12 +33,15 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: python main.py
+
+      # 👇 [수정됨] 들여쓰기 2칸 더 들어감 & steps 하위로 정렬
       - name: Upload Debug Screenshots
-      if: always()  # 에러가 나도 무조건 실행
-      uses: actions/upload-artifact@v4
-      with:
-        name: debug-screenshots
-        path: docs/reports/*.png  # 이 경로에 있는 png 파일을 저장함
+        if: always()  # 에러가 나도 무조건 실행
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: docs/reports/*.png  # 이 경로에 있는 png 파일을 저장함
+
       - name: Commit and Push Results
         run: |
           git config --global user.name "AutoBot"
