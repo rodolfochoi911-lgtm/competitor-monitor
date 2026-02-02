@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>알뜰폰 시장 모니터링 대시보드</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Noto Sans KR', sans-serif; background: #f4f6f9; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .card { background: white; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        h1 { text-align: center; color: #333; }
+        h2 { border-bottom: 2px solid #eee; padding-bottom: 10px; font-size: 1.2rem; color: #555; }
+        .chart-row { display: flex; gap: 20px; flex-wrap: wrap; }
+        .chart-box { flex: 1; min-width: 400px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; font-size: 0.9rem; }
+        th { background-color: #f8f9fa; }
+        a { color: #007bff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .badge { padding: 3px 6px; border-radius: 4px; font-size: 0.8rem; color: white; }
+        .badge-hot { background-color: #dc3545; }
+        .select-date { margin-bottom: 15px; padding: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 알뜰폰 시장 모니터링 Dashboard</h1>
+        
+        <div class="card">
+            <div class="chart-row">
+                <div class="chart-box">
+                    <h2>🔥 일별 게시글 화력 (Volume)</h2>
+                    <canvas id="volumeChart"></canvas>
+                </div>
+                <div class="chart-box">
+                    <h2>🍰 브랜드 점유율 (SOV)</h2>
+                    <canvas id="brandChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>🏆 일별 Top 5 핫딜 아카이브</h2>
+            <select id="dateSelector" class="select-date" onchange="renderTable()"></select>
+            <div id="postsTable"></div>
+        </div>
+    </div>
+
+    <script>
+        let historyData = [];
+
+        // 데이터 로드
+        async function loadData() {
+            try {
+                // 저장된 JSON 파일 읽어오기
+                const response = await fetch('data/dashboard_history.json');
+                historyData = await response.json();
+                
+                initCharts();
+                initTable();
+            } catch (error) {
+                console.error("데이터 로드 실패:", error);
+                document.querySelector('.container').innerHTML += "<p style='text-align:center; color:red;'>데이터가 아직 없습니다. 크롤러가 한 번 실행된 후 확인하세요.</p>";
+            }
+        }
+
+        function initCharts() {
+            const dates = historyData.map(d => d.date);
+            
+            // 1. Volume Chart
+            new Chart(document.getElementById('volumeChart'), {
+                type: 'line',
+                data: {
+                    labels: dates,
+                    datasets: [
+                        { label: '뽐뿌', data: historyData.map(d => d.total_volume.ppomppu), borderColor: '#ff6b6b', tension: 0.1 },
+                        { label: '디시', data: historyData.map(d => d.total_volume.dc), borderColor: '#4ecdc4', tension: 0.1 }
+                    ]
+                }
+            });
+
+            // 2. Brand SOV Chart (최근일 기준 누적 or 일별 추이)
+            // 여기서는 복잡도를 줄이기 위해 '가장 최근 날짜'의 파이차트로 보여줌 (추후 변경 가능)
+            const latest = historyData[historyData.length - 1];
+            const brands = latest.brand_sov;
+            
+            new Chart(document.getElementById('brandChart'), {
+                type: 'bar',
+                data: {
+                    labels: Object.keys(brands),
+                    datasets: [{
+                        label: '최근일 언급량',
+                        data: Object.values(brands),
+                        backgroundColor: '#339af0'
+                    }]
+                },
+                options: { indexAxis: 'y' } // 가로 막대 그래프
+            });
+        }
+
+        function initTable() {
+            const selector = document.getElementById('dateSelector');
+            // 날짜 역순 (최신순) 정렬
+            [...historyData].reverse().forEach((d, idx) => {
+                const option = document.createElement('option');
+                option.value = d.date;
+                option.text = d.date;
+                selector.appendChild(option);
+            });
+            renderTable();
+        }
+
+        function renderTable() {
+            const date = document.getElementById('dateSelector').value;
+            const data = historyData.find(d => d.date === date);
+            const div = document.getElementById('postsTable');
+            
+            if (!data) return;
+
+            let html = `<h3>📅 ${date} 인기글</h3>`;
+            
+            // 뽐뿌 테이블
+            html += `<h4>뽐뿌 Best</h4><table><thead><tr><th>제목</th><th>조회수</th><th>댓글</th></tr></thead><tbody>`;
+            data.top_posts.ppomppu.forEach(p => {
+                html += `<tr>
+                    <td><a href="${p.link}" target="_blank">${p.title}</a></td>
+                    <td>${p.views}</td>
+                    <td>${p.comments}</td>
+                </tr>`;
+            });
+            html += `</tbody></table>`;
+
+            // 디시 테이블
+            html += `<h4 style="margin-top:20px;">디시 Best</h4><table><thead><tr><th>제목</th><th>조회수</th><th>댓글</th></tr></thead><tbody>`;
+            data.top_posts.dc.forEach(p => {
+                html += `<tr>
+                    <td><a href="${p.link}" target="_blank">${p.title}</a></td>
+                    <td>${p.views}</td>
+                    <td>${p.comments}</td>
+                </tr>`;
+            });
+            html += `</tbody></table>`;
+
+            div.innerHTML = html;
+        }
+
+        loadData();
+    </script>
+</body>
+</html>
