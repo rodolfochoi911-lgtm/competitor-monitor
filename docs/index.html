@@ -4,16 +4,76 @@
         <meta charset="utf-8">
         <title>Competitor Promo Monitor</title>
         <style>
-            body { font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
-            h1 { color: #333; }
-            .report-link { display: block; padding: 10px; border-bottom: 1px solid #eee; text-decoration: none; color: #0066cc; }
-            .report-link:hover { background-color: #f9f9f9; }
-            .meta { color: #888; font-size: 0.8em; }
+            body { font-family: 'Segoe UI', sans-serif; max-width: 1000px; margin: 0 auto; padding: 20px; background-color:#f5f7fa; }
+            .card { background:white; padding:25px; border-radius:12px; box-shadow:0 4px 6px rgba(0,0,0,0.05); margin-bottom:25px; }
+            h1 { color: #2c3e50; margin-bottom: 5px; }
+            h3 { color: #34495e; border-bottom: 2px solid #eee; padding-bottom: 10px; margin-top: 0; }
+            .report-link { display: block; padding: 12px; border-bottom: 1px solid #f0f0f0; text-decoration: none; color: #3498db; font-weight:500; transition:0.2s; }
+            .report-link:hover { background-color: #f0f8ff; padding-left: 15px; }
+            .grid-container { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+            @media (max-width: 768px) { .grid-container { grid-template-columns: 1fr; } }
         </style>
     </head>
     <body>
-        <h1>📱 경쟁사 프로모션 모니터링</h1>
-        <p class="meta">Last Update: 2026-02-03 15:16:41 (KST)</p>
-        <hr>
-        <h2>📄 리포트 목록</h2>
-    <a class='report-link' href='reports/report_20260203_151641.html'>report_20260203_151641.html</a><a class='report-link' href='reports/report_20260203_142325.html'>report_20260203_142325.html</a><a class='report-link' href='reports/report_20260203_134921.html'>report_20260203_134921.html</a><a class='report-link' href='reports/report_20260203_085327.html'>report_20260203_085327.html</a><a class='report-link' href='reports/report_20260202_185909.html'>report_20260202_185909.html</a><a class='report-link' href='reports/report_20260202_174752.html'>report_20260202_174752.html</a><a class='report-link' href='reports/report_20260202_142714.html'>report_20260202_142714.html</a><a class='report-link' href='reports/report_20260202_133756.html'>report_20260202_133756.html</a><a class='report-link' href='reports/report_20260202_130015.html'>report_20260202_130015.html</a><a class='report-link' href='reports/report_20260202_123036.html'>report_20260202_123036.html</a><a class='report-link' href='reports/report_20260202_111037.html'>report_20260202_111037.html</a><a class='report-link' href='reports/report_20260202_105246.html'>report_20260202_105246.html</a><a class='report-link' href='reports/report_20260202_084413.html'>report_20260202_084413.html</a><a class='report-link' href='reports/report_20260201_164910.html'>report_20260201_164910.html</a><a class='report-link' href='reports/report_20260201_080020.html'>report_20260201_080020.html</a><a class='report-link' href='reports/report_20260131_233951.html'>report_20260131_233951.html</a><a class='report-link' href='reports/report_20260131_230710.html'>report_20260131_230710.html</a><a class='report-link' href='reports/report_20260131_160752.html'>report_20260131_160752.html</a><a class='report-link' href='reports/report_20260131_084512.html'>report_20260131_084512.html</a><a class='report-link' href='reports/report_20260130_173407.html'>report_20260130_173407.html</a><a class='report-link' href='reports/report_20260130_132637.html'>report_20260130_132637.html</a><a class='report-link' href='reports/report_20260130_101824.html'>report_20260130_101824.html</a><a class='report-link' href='reports/report_20260130_084702.html'>report_20260130_084702.html</a><a class='report-link' href='reports/report_20260129_165708.html'>report_20260129_165708.html</a><a class='report-link' href='reports/report_20260129_162925.html'>report_20260129_162925.html</a><a class='report-link' href='reports/report_20260129_155502.html'>report_20260129_155502.html</a><a class='report-link' href='reports/report_20260129_142853.html'>report_20260129_142853.html</a><a class='report-link' href='reports/report_2026-01-29.html'>report_2026-01-29.html</a><a class='report-link' href='reports/report_2026-01-28.html'>report_2026-01-28.html</a></body></html>
+        <div style="text-align:center; margin-bottom:30px;">
+            <h1>📱 경쟁사 프로모션 관제탑</h1>
+            <p style="color:#7f8c8d;">Last Update: 2026-02-03 16:00:30 (KST)</p>
+        </div>
+        
+        <div class="grid-container">
+            <div class="card">
+                <h3>📊 오늘 변동 현황 (New/Mod/Del)</h3>
+                <canvas id="changeChart"></canvas>
+            </div>
+            <div class="card">
+                <h3>📈 7일간 이벤트 규모 추이</h3>
+                <canvas id="trendChart"></canvas>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h3>🗂️ 리포트 아카이브</h3>
+            <div style="max-height: 400px; overflow-y: auto;">
+                <a href='reports/report_20260203_160030.html' class='report-link'>report_20260203_160030.html</a><a href='reports/report_20260203_151641.html' class='report-link'>report_20260203_151641.html</a><a href='reports/report_20260203_142325.html' class='report-link'>report_20260203_142325.html</a><a href='reports/report_20260203_134921.html' class='report-link'>report_20260203_134921.html</a><a href='reports/report_20260203_085327.html' class='report-link'>report_20260203_085327.html</a><a href='reports/report_20260202_185909.html' class='report-link'>report_20260202_185909.html</a><a href='reports/report_20260202_174752.html' class='report-link'>report_20260202_174752.html</a><a href='reports/report_20260202_142714.html' class='report-link'>report_20260202_142714.html</a><a href='reports/report_20260202_133756.html' class='report-link'>report_20260202_133756.html</a><a href='reports/report_20260202_130015.html' class='report-link'>report_20260202_130015.html</a><a href='reports/report_20260202_123036.html' class='report-link'>report_20260202_123036.html</a><a href='reports/report_20260202_111037.html' class='report-link'>report_20260202_111037.html</a><a href='reports/report_20260202_105246.html' class='report-link'>report_20260202_105246.html</a><a href='reports/report_20260202_084413.html' class='report-link'>report_20260202_084413.html</a><a href='reports/report_20260201_164910.html' class='report-link'>report_20260201_164910.html</a><a href='reports/report_20260201_080020.html' class='report-link'>report_20260201_080020.html</a><a href='reports/report_20260131_233951.html' class='report-link'>report_20260131_233951.html</a><a href='reports/report_20260131_230710.html' class='report-link'>report_20260131_230710.html</a><a href='reports/report_20260131_160752.html' class='report-link'>report_20260131_160752.html</a><a href='reports/report_20260131_084512.html' class='report-link'>report_20260131_084512.html</a><a href='reports/report_20260130_173407.html' class='report-link'>report_20260130_173407.html</a><a href='reports/report_20260130_132637.html' class='report-link'>report_20260130_132637.html</a><a href='reports/report_20260130_101824.html' class='report-link'>report_20260130_101824.html</a><a href='reports/report_20260130_084702.html' class='report-link'>report_20260130_084702.html</a><a href='reports/report_20260129_165708.html' class='report-link'>report_20260129_165708.html</a><a href='reports/report_20260129_162925.html' class='report-link'>report_20260129_162925.html</a><a href='reports/report_20260129_155502.html' class='report-link'>report_20260129_155502.html</a><a href='reports/report_20260129_142853.html' class='report-link'>report_20260129_142853.html</a><a href='reports/report_2026-01-29.html' class='report-link'>report_2026-01-29.html</a><a href='reports/report_2026-01-28.html' class='report-link'>report_2026-01-28.html</a>
+            </div>
+        </div>
+        
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        // Chart 1: 오늘의 변동 현황 (Stacked Bar)
+        const ctx1 = document.getElementById('changeChart');
+        new Chart(ctx1, {
+            type: 'bar',
+            data: {
+                labels: ["SKT \ub2e4\uc774\ub809\ud2b8", "SKT Air", "U+ \uc720\ubaa8\ubc14\uc77c", "KTM \ubaa8\ubc14\uc77c", "\uc2a4\uce74\uc774\ub77c\uc774\ud504", "\ud5ec\ub85c\ubaa8\ubc14\uc77c", "SK 7\uc138\ube10\ubaa8\ubc14\uc77c"],
+                datasets: [
+                    { label: '🟢 신규', data: [36, 0, 25, 25, 0, 2, 21], backgroundColor: 'rgba(75, 192, 192, 0.7)' },
+                    { label: '🟠 변경', data: [20, 0, 18, 20, 25, 25, 15], backgroundColor: 'rgba(255, 159, 64, 0.7)' },
+                    { label: '🔴 종료', data: [0, 0, 2, 0, 0, 4, 5], backgroundColor: 'rgba(255, 99, 132, 0.7)' }
+                ]
+            },
+            options: {
+                responsive: true,
+                scales: { x: { stacked: true }, y: { stacked: true } },
+                plugins: { legend: { position: 'top' } }
+            }
+        });
+
+        // Chart 2: 7일간 이벤트 총량 추이 (Line)
+        const ctx2 = document.getElementById('trendChart');
+        new Chart(ctx2, {
+            type: 'line',
+            data: {
+                labels: ["02/02", "02/02", "02/03", "02/03", "02/03", "02/03", "02/03"],
+                datasets: [{"label": "SKT \ub2e4\uc774\ub809\ud2b8", "data": [20, 20, 20, 20, 20, 20, 56], "borderColor": "#FF6384", "fill": false, "tension": 0.1}, {"label": "SKT Air", "data": [1, 1, 1, 1, 1, 1, 1], "borderColor": "#36A2EB", "fill": false, "tension": 0.1}, {"label": "U+ \uc720\ubaa8\ubc14\uc77c", "data": [20, 20, 20, 20, 20, 20, 43], "borderColor": "#FFCE56", "fill": false, "tension": 0.1}, {"label": "KTM \ubaa8\ubc14\uc77c", "data": [20, 20, 20, 20, 20, 20, 45], "borderColor": "#4BC0C0", "fill": false, "tension": 0.1}, {"label": "\uc2a4\uce74\uc774\ub77c\uc774\ud504", "data": [12, 12, 12, 25, 25, 25, 25], "borderColor": "#9966FF", "fill": false, "tension": 0.1}, {"label": "\ud5ec\ub85c\ubaa8\ubc14\uc77c", "data": [20, 20, 20, 28, 27, 29, 27], "borderColor": "#FF9F40", "fill": false, "tension": 0.1}, {"label": "SK 7\uc138\ube10\ubaa8\ubc14\uc77c", "data": [20, 20, 20, 20, 20, 20, 36], "borderColor": "#E7E9ED", "fill": false, "tension": 0.1}]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { position: 'bottom' } }
+            }
+        });
+    </script>
+    
+    </body>
+    </html>
+    
