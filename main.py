@@ -13,6 +13,7 @@ import re
 import traceback
 import html
 import difflib
+import requests
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
@@ -551,3 +552,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
