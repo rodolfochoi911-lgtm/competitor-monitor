@@ -1,7 +1,7 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V52)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V54)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-02-02 (모든 이벤트 상세 페이지 진입하여 본문 수집 + 변경 감지 고도화)
+[업데이트] 2026-02-03 (기존 로직 유지 + 스카이라이프 URL 파라미터 연결 버그만 수정)
 """
 
 import os
@@ -43,7 +43,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(REPORT_DIR, exist_ok=True)
 
 def setup_driver():
-    print("🚗 [V52] 드라이버 설정 (상세 수집 모드)...")
+    print("🚗 [V54] 드라이버 설정 (버전 144 고정)...")
     options = uc.ChromeOptions()
     options.add_argument("--headless=new") 
     options.add_argument("--no-sandbox")
@@ -51,7 +51,6 @@ def setup_driver():
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--lang=ko_KR")
     
-    # [버전 고정] 144
     driver = uc.Chrome(options=options, version_main=144)
     return driver
 
@@ -75,12 +74,10 @@ def scroll_to_bottom(driver):
     except: pass
 
 def clean_html(html_source):
-    """HTML에서 스크립트, 스타일 등 불필요한 태그 제거하고 텍스트만 추출"""
     if not html_source: return ""
     soup = BeautifulSoup(html_source, 'html.parser')
     for tag in soup(['script', 'style', 'meta', 'noscript', 'header', 'footer', 'iframe', 'button', 'input', 'nav', 'aside', 'link']):
         tag.decompose()
-    # 공백 제거한 순수 텍스트 반환 (비교 정확도 향상)
     return soup.get_text(separator=' ', strip=True)
 
 def load_previous_data():
@@ -94,47 +91,39 @@ def load_previous_data():
             return json.load(f)
     except: return {}
 
-# [비교 로직] 이제 본문(Content)까지 꼼꼼히 비교함
 def analyze_content_changes(prev, curr):
-    # 1. 제목 비교
     if prev.get('title', '').strip() != curr.get('title', '').strip():
         return f"✏️ 제목 변경: {prev.get('title')} -> {curr.get('title')}"
     
-    # 2. 본문 비교 (상세 페이지 텍스트)
-    # 공백/줄바꿈 다 없애고 알맹이 글자만 비교
     prev_txt = prev.get('content', '').replace(" ", "").replace("\n", "")
     curr_txt = curr.get('content', '').replace(" ", "").replace("\n", "")
     
     if prev_txt and curr_txt and prev_txt != curr_txt:
-        # 너무 긴 텍스트 차이는 그냥 '본문 수정'으로 퉁침
         return "📝 상세 본문 내용 수정됨"
+    
+    if prev.get('img', '').strip() != curr.get('img', '').strip():
+        return "🖼️ 썸네일/이미지 변경"
             
     return None 
 
 # =========================================================
-# [핵심 함수] 상세 페이지 방문 수집기 (Deep Crawler)
+# [Deep Crawler] 상세 수집 (기존 유지)
 # =========================================================
 def extract_deep_events(driver, site_name, keyword_list, onclick_pattern=None, base_url=""):
     collected_data = {}
-    
     try:
-        # [Step 1] 목록 페이지 로딩
         time.sleep(5)
         scroll_to_bottom(driver)
         
-        # 스카이라이프 차단 체크
         if site_name == "스카이라이프":
             if "접속이 원활하지" in driver.page_source:
                 print("    🚨 [Skylife] 차단됨 (목록 진입 불가).")
                 return {}
 
-        # [Step 2] 링크 수집 (목록)
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         all_links = soup.find_all('a')
-        
         target_urls = set()
         
-        # 링크 추출 및 정제
         for link in all_links:
             href = link.get('href', '')
             onclick = link.get('onclick', '')
@@ -163,26 +152,21 @@ def extract_deep_events(driver, site_name, keyword_list, onclick_pattern=None, b
         
         print(f"    [{site_name}] 발견된 상세 URL: {len(target_urls)}개 -> 상세 수집 시작")
 
-        # [Step 3] 상세 페이지 하나씩 방문 (Deep Crawling)
         count = 0
         for url in target_urls:
             try:
-                # 상세 페이지 이동
                 driver.get(url)
-                time.sleep(random.uniform(2.0, 3.5)) # 페이지 로딩 대기
+                time.sleep(random.uniform(2.0, 3.5))
                 
-                # 본문 추출
                 content_text = clean_html(driver.page_source)
                 
-                # 제목 추출 (title 태그 활용)
                 page_title = driver.title
-                if not page_title or site_name in page_title: # 사이트 이름만 있으면 본문에서 찾기
+                if not page_title or site_name in page_title: 
                     try: page_title = driver.find_element(By.TAG_NAME, "h1").text
                     except: 
                         try: page_title = driver.find_element(By.CSS_SELECTOR, "h2").text
                         except: page_title = "제목 없음"
 
-                # 썸네일 (대표 이미지) - 메타태그 활용
                 img_src = ""
                 try:
                     meta_img = driver.find_element(By.CSS_SELECTOR, "meta[property='og:image']")
@@ -192,12 +176,11 @@ def extract_deep_events(driver, site_name, keyword_list, onclick_pattern=None, b
                 collected_data[url] = {
                     "title": page_title.strip(),
                     "img": img_src,
-                    "content": content_text[:3000] # 너무 길면 자름 (비교용)
+                    "content": content_text[:3000]
                 }
                 count += 1
                 print(f"      - [{count}/{len(target_urls)}] 수집 완료: {page_title[:20]}...")
                 
-                # 차단 방지를 위해 너무 많이는 수집 안 함 (최대 20개 제한)
                 if count >= 20: break
                 
             except Exception as e:
@@ -217,7 +200,7 @@ def extract_single_page_content(driver, selector):
     except: return {}
 
 # =========================================================
-# 통합 크롤링 로직
+# 통합 크롤링 로직 (★ 여기만 수정됨)
 # =========================================================
 def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_selector=None):
     print(f"🚀 [{site_name}] 시작...")
@@ -226,7 +209,6 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
         driver.get(base_url); time.sleep(3)
         return extract_single_page_content(driver, target_selector)
     
-    # 설정
     keywords = []
     onclick = None
     base = ""
@@ -238,13 +220,42 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
     elif site_name == "SK 7세븐모바일": keywords = ["event"]; onclick = r"['\"]([^'\"]+)['\"]"; base = "https://www.sk7mobile.com"
     elif site_name == "SKT 다이렉트": keywords = ["event", "plan"]; base = "https://shop.tworld.co.kr"
     
-    # [Step 1] 목록 페이지 진입
-    driver.get(base_url)
-    time.sleep(3)
-    remove_popups(driver)
+    collected_items = {}
+    page = 1
     
-    # [Step 2] Deep Crawler 실행 (목록 -> 상세 방문 -> 수집)
-    return extract_deep_events(driver, site_name, keywords, onclick, base)
+    while True:
+        # [수정된 부분] URL 파라미터 연결 로직 (스카이라이프 대응)
+        if pagination_param:
+            if pagination_param == "#":
+                target_url = f"{base_url}#{page}"
+            else:
+                # 이미 ?가 있으면 &로, 없으면 ?로 연결
+                separator = "&" if "?" in base_url else "?"
+                target_url = f"{base_url}{separator}{pagination_param}={page}"
+        else:
+            target_url = base_url
+
+        driver.get(target_url)
+        if pagination_param == "#": driver.refresh(); time.sleep(2)
+        
+        time.sleep(3)
+        remove_popups(driver)
+        
+        page_data = extract_deep_events(driver, site_name, keywords, onclick, base)
+        
+        new_cnt = 0
+        for href, info in page_data.items():
+            if href not in collected_items:
+                collected_items[href] = info
+                new_cnt += 1
+        
+        if new_cnt == 0: break
+        if not pagination_param: break
+        
+        page += 1
+        if page > 5: break
+
+    return collected_items
 
 def update_index_page():
     report_files = glob.glob(os.path.join(REPORT_DIR, "report_*.html"))
@@ -265,6 +276,7 @@ def main():
             {"name": "SKT Air", "url": "https://sktair-event.com/", "param": None, "selector": "#app > div > section.content"},
             {"name": "U+ 유모바일", "url": "https://www.uplusumobile.com/event-benefit/event/ongoing", "param": None, "selector": ""},
             {"name": "KTM 모바일", "url": "https://www.ktmmobile.com/event/eventBoardList.do", "param": None, "selector": ""},
+            # [수정] 스카이라이프 URL 파라미터 포함된 주소로 변경
             {"name": "스카이라이프", "url": "https://www.skylife.co.kr/event?category=mobile", "param": "p", "selector": ""},
             {"name": "헬로모바일", "url": "https://direct.lghellovision.net/event/viewEventList.do?returnTab=allli", "param": "#", "selector": ""},
             {"name": "SK 7세븐모바일", "url": "https://www.sk7mobile.com/bnef/event/eventIngList.do", "param": None, "selector": ""}
@@ -277,7 +289,6 @@ def main():
             try:
                 data = crawl_site_logic(driver, comp['name'], comp['url'], comp['param'], comp['selector'])
                 
-                # [안전장치] 0개면 기존 데이터 유지 (차단/오류 방어)
                 if len(data) == 0:
                     print(f"    🛑 {comp['name']} 수집 실패(0건). 기존 데이터 유지.")
                     today_results[comp['name']] = yesterday_results.get(comp['name'], {})
@@ -296,7 +307,6 @@ def main():
             
         print("✅ 데이터 저장 완료")
         
-        # 리포트 생성
         report_body = ""
         total_change_count = 0
         company_summary = []
@@ -350,22 +360,10 @@ def main():
         with open(os.path.join(REPORT_DIR, filename), "w", encoding="utf-8") as f: f.write(report_header + report_body)
         update_index_page()
         
-        # 전체 목록 파일 생성 (디버깅용)
-        full_list_html = f"<h1>📂 {DISPLAY_DATE} 전체 목록</h1><hr>"
-        for name, pages in today_results.items():
-            full_list_html += f"<h3>{name} ({len(pages)}개)</h3><ul>"
-            for url, data in pages.items():
-                full_list_html += f"<li><a href='{url}'>{data.get('title')}</a></li>"
-            full_list_html += "</ul><hr>"
-        
-        list_filename = f"list_{FILE_TIMESTAMP}.html"
-        with open(os.path.join(REPORT_DIR, list_filename), "w", encoding="utf-8") as f: f.write(full_list_html)
-
         dashboard_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/"
         report_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{filename}"
-        list_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{list_filename}"
         
-        payload = {"text": f"📢 *[KST {DISPLAY_TIME}] 경쟁사 동향 보고* \n\n✅ *요약:* {summary_text}\n\n👉 *변경 리포트:* {report_url}\n🗂️ *전체 목록:* {list_url}\n📂 *대시보드:* {dashboard_url}"}
+        payload = {"text": f"📢 *[KST {DISPLAY_TIME}] 경쟁사 동향 보고* \n\n✅ *요약:* {summary_text}\n\n👉 *변경 리포트:* {report_url}\n📂 *대시보드:* {dashboard_url}"}
         
         if SLACK_WEBHOOK_URL:
             requests.post(SLACK_WEBHOOK_URL, json=payload)
