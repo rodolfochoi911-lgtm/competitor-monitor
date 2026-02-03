@@ -1,7 +1,7 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V55)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V56)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-02-03 (누락된 '전체 목록' 생성 로직 및 슬랙 링크 복구 + 기존 기능 통합)
+[업데이트] 2026-02-03 (전체 목록 썸네일 복구 + 변경 리포트 소스코드 뷰어 추가)
 """
 
 import os
@@ -11,6 +11,7 @@ import glob
 import random
 import re
 import traceback
+import html  # [추가] 소스코드 출력을 위한 이스케이프 처리
 from datetime import datetime, timedelta, timezone
 import requests
 from urllib.parse import urljoin
@@ -43,7 +44,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(REPORT_DIR, exist_ok=True)
 
 def setup_driver():
-    print("🚗 [V55] 드라이버 설정 (버전 144 고정)...")
+    print("🚗 [V56] 드라이버 설정 (버전 144 고정)...")
     options = uc.ChromeOptions()
     options.add_argument("--headless=new") 
     options.add_argument("--no-sandbox")
@@ -74,11 +75,20 @@ def scroll_to_bottom(driver):
     except: pass
 
 def clean_html(html_source):
+    """
+    HTML에서 스크립트 등 불필요한 태그 제거 후 'HTML 구조' 반환
+    (V56 수정: 소스코드 뷰어를 위해 get_text() 대신 prettify() 사용)
+    """
     if not html_source: return ""
     soup = BeautifulSoup(html_source, 'html.parser')
-    for tag in soup(['script', 'style', 'meta', 'noscript', 'header', 'footer', 'iframe', 'button', 'input', 'nav', 'aside', 'link']):
+    # 제거할 태그 목록
+    for tag in soup(['script', 'style', 'meta', 'noscript', 'header', 'footer', 'iframe', 'button', 'input', 'nav', 'aside', 'link', 'form']):
         tag.decompose()
-    return soup.get_text(separator=' ', strip=True)
+    
+    # 본문(Body)만 추출하거나 전체를 깔끔하게 반환
+    if soup.body:
+        return soup.body.prettify()
+    return soup.prettify()
 
 def load_previous_data():
     json_files = glob.glob(os.path.join(DATA_DIR, "data_*.json"))
@@ -92,15 +102,20 @@ def load_previous_data():
     except: return {}
 
 def analyze_content_changes(prev, curr):
+    """변경 사항 분석 및 사유 도출"""
+    # 1. 제목 비교
     if prev.get('title', '').strip() != curr.get('title', '').strip():
         return f"✏️ 제목 변경: {prev.get('title')} -> {curr.get('title')}"
     
-    prev_txt = prev.get('content', '').replace(" ", "").replace("\n", "")
-    curr_txt = curr.get('content', '').replace(" ", "").replace("\n", "")
+    # 2. 본문(HTML) 비교
+    # 공백 제거 후 비교하여 불필요한 알림 최소화
+    prev_clean = re.sub(r'\s+', '', prev.get('content', ''))
+    curr_clean = re.sub(r'\s+', '', curr.get('content', ''))
     
-    if prev_txt and curr_txt and prev_txt != curr_txt:
-        return "📝 상세 본문 내용 수정됨"
+    if prev_clean and curr_clean and prev_clean != curr_clean:
+        return "📝 상세 본문 HTML 수정됨"
     
+    # 3. 이미지 비교
     if prev.get('img', '').strip() != curr.get('img', '').strip():
         return "🖼️ 썸네일/이미지 변경"
             
@@ -158,7 +173,8 @@ def extract_deep_events(driver, site_name, keyword_list, onclick_pattern=None, b
                 driver.get(url)
                 time.sleep(random.uniform(2.0, 3.5))
                 
-                content_text = clean_html(driver.page_source)
+                # [V56] HTML 소스 코드 저장 (clean_html이 태그 포함 반환)
+                content_html = clean_html(driver.page_source)
                 
                 page_title = driver.title
                 if not page_title or site_name in page_title: 
@@ -176,7 +192,7 @@ def extract_deep_events(driver, site_name, keyword_list, onclick_pattern=None, b
                 collected_data[url] = {
                     "title": page_title.strip(),
                     "img": img_src,
-                    "content": content_text[:3000]
+                    "content": content_html[:10000] # HTML 저장 (너무 길면 자름)
                 }
                 count += 1
                 print(f"      - [{count}/{len(target_urls)}] 수집 완료: {page_title[:20]}...")
@@ -224,7 +240,6 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
     page = 1
     
     while True:
-        # URL 파라미터 연결 로직 (스카이라이프 대응)
         if pagination_param:
             if pagination_param == "#":
                 target_url = f"{base_url}#{page}"
@@ -256,7 +271,6 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
 
     return collected_items
 
-# 대시보드 강제 재생성 (404 방지)
 def update_index_page():
     print("📊 대시보드(index.html) 업데이트 중...")
     report_files = glob.glob(os.path.join(REPORT_DIR, "report_*.html"))
@@ -363,6 +377,18 @@ def main():
                     img_html = f"<img src='{img_src}' style='height:50px; margin-right:10px;'>" if img_src else ""
                     title = curr.get('title') if curr else prev.get('title')
                     
+                    # [V56] 소스코드 뷰어 추가
+                    source_code_html = ""
+                    if change_type == "UPDATED" and curr.get('content'):
+                         # HTML 이스케이프 처리하여 텍스트로 표시
+                         safe_html = html.escape(curr.get('content')[:2000] + "...") 
+                         source_code_html = f"""
+                         <details style='margin-top:5px;'>
+                            <summary style='cursor:pointer; color:#0066cc; font-size:0.9em;'>🔍 변경된 HTML 소스 보기</summary>
+                            <pre style='background:#f4f4f4; padding:10px; font-size:0.8em; overflow-x:auto; border:1px solid #ddd;'>{safe_html}</pre>
+                         </details>
+                         """
+
                     site_changes += f"""
                     <div style="border-left: 5px solid {color}; padding: 10px; margin-bottom: 10px; background: #fff;">
                         <h3 style="margin: 0 0 5px 0;"><span style="color:{color};">[{change_type}]</span> {title}</h3>
@@ -370,6 +396,7 @@ def main():
                             {img_html}
                             <div style="font-size: 0.9em; color: #555;"><b>사유:</b> {reason}<br><a href="{url}" target="_blank">🔗 링크</a></div>
                         </div>
+                        {source_code_html}
                     </div>
                     """
                     site_change_count += 1
@@ -385,21 +412,27 @@ def main():
         filename = f"report_{FILE_TIMESTAMP}.html"
         with open(os.path.join(REPORT_DIR, filename), "w", encoding="utf-8") as f: f.write(report_header + report_body)
         
-        # 1. 대시보드 갱신
         update_index_page()
         
-        # 2. [복구] 전체 목록 파일 생성
+        # [V56] 전체 목록(list_*.html) 디자인 업그레이드 (썸네일 + 그리드)
         full_list_html = f"<h1>📂 {DISPLAY_DATE} 전체 목록</h1><hr>"
         for name, pages in today_results.items():
-            full_list_html += f"<h3>{name} ({len(pages)}개)</h3><ul>"
+            full_list_html += f"<h3>{name} ({len(pages)}개)</h3><div style='display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:15px;'>"
             for url, data in pages.items():
-                full_list_html += f"<li><a href='{url}' target='_blank'>{data.get('title')}</a></li>"
-            full_list_html += "</ul><hr>"
+                img_tag = f"<img src='{data.get('img','')}' style='width:100%; height:120px; object-fit:cover; border-radius:5px; border:1px solid #eee;'>" if data.get('img') else "<div style='width:100%; height:120px; background:#f0f0f0; display:flex; align-items:center; justify-content:center; border-radius:5px;'>No Image</div>"
+                full_list_html += f"""
+                <div style='border:1px solid #ddd; padding:10px; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,0.05);'>
+                    <a href='{url}' target='_blank' style='text-decoration:none; color:#333;'>
+                        {img_tag}
+                        <p style='margin:10px 0 0 0; font-weight:bold; font-size:0.95em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;'>{data.get('title')}</p>
+                    </a>
+                </div>
+                """
+            full_list_html += "</div><hr>"
             
         list_filename = f"list_{FILE_TIMESTAMP}.html"
         with open(os.path.join(REPORT_DIR, list_filename), "w", encoding="utf-8") as f: f.write(full_list_html)
 
-        # 3. 슬랙 전송 (링크 복구됨)
         dashboard_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/"
         report_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{filename}"
         list_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{list_filename}"
