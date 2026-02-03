@@ -1,7 +1,7 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V54)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V55)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-02-03 (기존 로직 유지 + 스카이라이프 URL 파라미터 연결 버그만 수정)
+[업데이트] 2026-02-03 (누락된 '전체 목록' 생성 로직 및 슬랙 링크 복구 + 기존 기능 통합)
 """
 
 import os
@@ -43,7 +43,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(REPORT_DIR, exist_ok=True)
 
 def setup_driver():
-    print("🚗 [V54] 드라이버 설정 (버전 144 고정)...")
+    print("🚗 [V55] 드라이버 설정 (버전 144 고정)...")
     options = uc.ChromeOptions()
     options.add_argument("--headless=new") 
     options.add_argument("--no-sandbox")
@@ -107,7 +107,7 @@ def analyze_content_changes(prev, curr):
     return None 
 
 # =========================================================
-# [Deep Crawler] 상세 수집 (기존 유지)
+# [Deep Crawler] 상세 수집
 # =========================================================
 def extract_deep_events(driver, site_name, keyword_list, onclick_pattern=None, base_url=""):
     collected_data = {}
@@ -200,7 +200,7 @@ def extract_single_page_content(driver, selector):
     except: return {}
 
 # =========================================================
-# 통합 크롤링 로직 (★ 여기만 수정됨)
+# 통합 크롤링 로직
 # =========================================================
 def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_selector=None):
     print(f"🚀 [{site_name}] 시작...")
@@ -224,12 +224,11 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
     page = 1
     
     while True:
-        # [수정된 부분] URL 파라미터 연결 로직 (스카이라이프 대응)
+        # URL 파라미터 연결 로직 (스카이라이프 대응)
         if pagination_param:
             if pagination_param == "#":
                 target_url = f"{base_url}#{page}"
             else:
-                # 이미 ?가 있으면 &로, 없으면 ?로 연결
                 separator = "&" if "?" in base_url else "?"
                 target_url = f"{base_url}{separator}{pagination_param}={page}"
         else:
@@ -257,15 +256,43 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
 
     return collected_items
 
+# 대시보드 강제 재생성 (404 방지)
 def update_index_page():
+    print("📊 대시보드(index.html) 업데이트 중...")
     report_files = glob.glob(os.path.join(REPORT_DIR, "report_*.html"))
     report_files.sort(reverse=True)
-    index_html = f"<html><body><h1>모니터링 아카이브</h1><p>Update: {DISPLAY_DATE} {DISPLAY_TIME}</p>"
+    
+    index_html = f"""
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>Competitor Promo Monitor</title>
+        <style>
+            body {{ font-family: sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
+            h1 {{ color: #333; }}
+            .report-link {{ display: block; padding: 10px; border-bottom: 1px solid #eee; text-decoration: none; color: #0066cc; }}
+            .report-link:hover {{ background-color: #f9f9f9; }}
+            .meta {{ color: #888; font-size: 0.8em; }}
+        </style>
+    </head>
+    <body>
+        <h1>📱 경쟁사 프로모션 모니터링</h1>
+        <p class="meta">Last Update: {DISPLAY_DATE} {DISPLAY_TIME} (KST)</p>
+        <hr>
+        <h2>📄 리포트 목록</h2>
+    """
+    
     for f in report_files:
         name = os.path.basename(f)
-        index_html += f"<div><a href='reports/{name}'>{name}</a></div>"
+        index_html += f"<a class='report-link' href='reports/{name}'>{name}</a>"
+    
     index_html += "</body></html>"
-    with open(os.path.join(DOCS_DIR, "index.html"), "w", encoding="utf-8") as f: f.write(index_html)
+    
+    with open(os.path.join(DOCS_DIR, "index.html"), "w", encoding="utf-8") as f:
+        f.write(index_html)
+    
+    with open(os.path.join(DOCS_DIR, ".nojekyll"), "w") as f:
+        f.write("")
 
 def main():
     try:
@@ -276,7 +303,6 @@ def main():
             {"name": "SKT Air", "url": "https://sktair-event.com/", "param": None, "selector": "#app > div > section.content"},
             {"name": "U+ 유모바일", "url": "https://www.uplusumobile.com/event-benefit/event/ongoing", "param": None, "selector": ""},
             {"name": "KTM 모바일", "url": "https://www.ktmmobile.com/event/eventBoardList.do", "param": None, "selector": ""},
-            # [수정] 스카이라이프 URL 파라미터 포함된 주소로 변경
             {"name": "스카이라이프", "url": "https://www.skylife.co.kr/event?category=mobile", "param": "p", "selector": ""},
             {"name": "헬로모바일", "url": "https://direct.lghellovision.net/event/viewEventList.do?returnTab=allli", "param": "#", "selector": ""},
             {"name": "SK 7세븐모바일", "url": "https://www.sk7mobile.com/bnef/event/eventIngList.do", "param": None, "selector": ""}
@@ -358,12 +384,27 @@ def main():
         
         filename = f"report_{FILE_TIMESTAMP}.html"
         with open(os.path.join(REPORT_DIR, filename), "w", encoding="utf-8") as f: f.write(report_header + report_body)
+        
+        # 1. 대시보드 갱신
         update_index_page()
         
+        # 2. [복구] 전체 목록 파일 생성
+        full_list_html = f"<h1>📂 {DISPLAY_DATE} 전체 목록</h1><hr>"
+        for name, pages in today_results.items():
+            full_list_html += f"<h3>{name} ({len(pages)}개)</h3><ul>"
+            for url, data in pages.items():
+                full_list_html += f"<li><a href='{url}' target='_blank'>{data.get('title')}</a></li>"
+            full_list_html += "</ul><hr>"
+            
+        list_filename = f"list_{FILE_TIMESTAMP}.html"
+        with open(os.path.join(REPORT_DIR, list_filename), "w", encoding="utf-8") as f: f.write(full_list_html)
+
+        # 3. 슬랙 전송 (링크 복구됨)
         dashboard_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/"
         report_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{filename}"
+        list_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{list_filename}"
         
-        payload = {"text": f"📢 *[KST {DISPLAY_TIME}] 경쟁사 동향 보고* \n\n✅ *요약:* {summary_text}\n\n👉 *변경 리포트:* {report_url}\n📂 *대시보드:* {dashboard_url}"}
+        payload = {"text": f"📢 *[KST {DISPLAY_TIME}] 경쟁사 동향 보고* \n\n✅ *요약:* {summary_text}\n\n👉 *변경 리포트:* {report_url}\n🗂️ *전체 목록:* {list_url}\n📂 *대시보드:* {dashboard_url}"}
         
         if SLACK_WEBHOOK_URL:
             requests.post(SLACK_WEBHOOK_URL, json=payload)
