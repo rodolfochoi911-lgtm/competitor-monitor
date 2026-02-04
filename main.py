@@ -1,7 +1,7 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V58)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V62)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-02-03 (대시보드 고도화: '오늘의 변동(스택바)' + '7일간 추이(라인차트)' 시각화 적용)
+[업데이트] 2026-02-04 (V62: 썸네일 누락 문제 해결 - 이미지 자동 탐색/LazyLoad 처리/경로 보정 강화)
 """
 
 import os
@@ -13,7 +13,7 @@ import re
 import traceback
 import html
 import difflib
-import requests
+import requests  # 필수 라이브러리
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
@@ -43,8 +43,158 @@ DISPLAY_TIME = NOW.strftime("%H:%M:%S")
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(REPORT_DIR, exist_ok=True)
 
+# =========================================================
+# [유틸리티] 슬랙 알람 전송
+# =========================================================
+def send_slack_alert(webhook_url, payload):
+    if not webhook_url:
+        print("⚠️ [Slack] 웹훅 URL 없음. 건너뜀.")
+        return
+    try:
+        response = requests.post(
+            webhook_url, 
+            json=payload, 
+            headers={"Content-Type": "application/json"},
+            timeout=10
+        )
+        if response.status_code != 200:
+            print(f"❌ [Slack] 전송 실패: {response.status_code} {response.text}")
+    except Exception as e:
+        print(f"💥 [Slack] 전송 오류 (무시함): {e}")
+
+# =========================================================
+# [핵심] 노이즈 제거 및 텍스트 처리 (V60 유지)
+# =========================================================
+def clean_noise(text):
+    if not text: return ""
+    text = re.sub(r'(조회|view|읽음)(수)?[\s:.]*[\d,]+', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\d+(일|시간|분|초)\s*(남음|남았|전|후)', '', text)
+    text = re.sub(r'(마감|종료)\s*(까지)?', '', text) 
+    text = re.sub(r'\bD-[\dDay]+', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\d{1,2}\s*:\s*\d{1,2}(\s*:\s*\d{1,2})?', '', text)
+    text = re.sub(r'Loading\s*챗봇\s*열기', '', text)
+    text = re.sub(r'Loading', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def clean_html(html_source):
+    if not html_source: return ""
+    soup = BeautifulSoup(html_source, 'html.parser')
+    for tag in soup(['script', 'style', 'meta', 'noscript', 'header', 'footer', 'iframe', 'button', 'input', 'nav', 'aside', 'link', 'form']):
+        tag.decompose()
+    return soup.body.prettify() if soup.body else soup.prettify()
+
+def get_clean_text(html_content):
+    if not html_content: return ""
+    return BeautifulSoup(html_content, "html.parser").get_text(separator=" ", strip=True)
+
+def calculate_similarity(text1, text2):
+    if not text1 or not text2: return 0.0
+    return difflib.SequenceMatcher(None, text1, text2).ratio()
+
+# =========================================================
+# [핵심] 이미지 추출 고도화 함수 (V62 New)
+# =========================================================
+def get_best_image(driver, base_url):
+    """
+    [V62] 페이지에서 가장 적절한 썸네일을 찾아내는 탐정 함수
+    1순위: Open Graph (og:image)
+    2순위: 본문 내 큰 이미지 (width > 300)
+    특징: Lazy Loading(data-src) 지원, 상대경로 절대경로 변환
+    """
+    img_src = ""
+    
+    # 1. 메타 태그 (og:image) 우선 확인 - 가장 정확함
+    try:
+        meta_img = driver.find_element(By.CSS_SELECTOR, "meta[property='og:image']")
+        img_src = meta_img.get_attribute("content")
+        if img_src and "kakao" not in img_src and "share" not in img_src: # 공유용 아이콘 제외 시도
+            return urljoin(base_url, img_src)
+    except: pass
+
+    # 2. 본문 영역 이미지 스캔
+    # 사이트별 본문 영역 선택자 후보군
+    content_selectors = [
+        "#contents img", ".view_content img", ".event-view img", ".board-view img", 
+        ".view_area img", ".content img", ".article img", "div[class*='view'] img"
+    ]
+    
+    candidates = []
+    
+    for selector in content_selectors:
+        try:
+            imgs = driver.find_elements(By.CSS_SELECTOR, selector)
+            for i in imgs:
+                # 이미지 주소 추출 (src 없으면 data-src 확인)
+                src = i.get_attribute("src")
+                if not src: src = i.get_attribute("data-src")
+                if not src: src = i.get_attribute("data-original")
+                
+                if not src: continue
+                if "icon" in src or "btn" in src or "logo" in src: continue # 아이콘/로고 제외
+
+                # 사이즈 확인 (너무 작은 건 패스)
+                try:
+                    w = int(i.get_attribute("width")) if i.get_attribute("width") else i.size['width']
+                    h = int(i.get_attribute("height")) if i.get_attribute("height") else i.size['height']
+                    if w > 200 and h > 100:
+                        candidates.append(urljoin(base_url, src))
+                except:
+                    # 사이즈를 못 구하면 일단 후보에 넣음
+                    candidates.append(urljoin(base_url, src))
+            
+            if candidates: break # 선택자에서 찾았으면 루프 종료
+        except: pass
+
+    if candidates:
+        return candidates[0] # 첫 번째 후보 반환
+    
+    return img_src # 없으면 og:image라도 반환 (없으면 빈값)
+
+# =========================================================
+# [로직] 변경 감지
+# =========================================================
+def check_update_same_url(prev, curr):
+    reasons = []
+    diff_html = ""
+    
+    if prev.get('title', '').strip() != curr.get('title', '').strip():
+        reasons.append("제목 변경")
+    
+    prev_raw = get_clean_text(prev.get('content', ''))
+    curr_raw = get_clean_text(curr.get('content', ''))
+    prev_clean = clean_noise(prev_raw)
+    curr_clean = clean_noise(curr_raw)
+    
+    if prev_clean and curr_clean:
+        sim = calculate_similarity(prev_clean, curr_clean)
+        if sim < 1.0: 
+            reasons.append("본문 수정")
+            diff_html = f"""
+            <div style="display:flex; gap:10px; margin-top:10px;">
+                <div style="flex:1; background:#ffeef0; padding:10px; border-radius:5px;">
+                    <strong style="color:red;">[이전]</strong>
+                    <div style="font-size:13px; line-height:1.4; max-height:200px; overflow-y:auto;">{html.escape(prev_raw[:500])}...</div>
+                </div>
+                <div style="flex:1; background:#e6fffa; padding:10px; border-radius:5px;">
+                    <strong style="color:green;">[현재]</strong>
+                    <div style="font-size:13px; line-height:1.4; max-height:200px; overflow-y:auto;">{html.escape(curr_raw[:500])}...</div>
+                </div>
+            </div>
+            """
+
+    if prev.get('img', '').strip() != curr.get('img', '').strip():
+        reasons.append("썸네일 변경")
+            
+    if reasons: 
+        return {"msg": f"{', '.join(reasons)}", "html": diff_html}
+    return None
+
+# =========================================================
+# [크롤러] 설정 및 수집 로직
+# =========================================================
 def setup_driver():
-    print("🚗 [V58] 드라이버 설정 (버전 144)...")
+    print("🚗 [V62] 드라이버 설정 (버전 144)...")
     options = uc.ChromeOptions()
     options.add_argument("--headless=new") 
     options.add_argument("--no-sandbox")
@@ -73,17 +223,6 @@ def scroll_to_bottom(driver):
             last_height = new_height
     except: pass
 
-def clean_html(html_source):
-    if not html_source: return ""
-    soup = BeautifulSoup(html_source, 'html.parser')
-    for tag in soup(['script', 'style', 'meta', 'noscript', 'header', 'footer', 'iframe', 'button', 'input', 'nav', 'aside', 'link', 'form']):
-        tag.decompose()
-    return soup.body.prettify() if soup.body else soup.prettify()
-
-def get_clean_text(html_content):
-    if not html_content: return ""
-    return BeautifulSoup(html_content, "html.parser").get_text(separator=" ", strip=True)
-
 def load_previous_data():
     json_files = glob.glob(os.path.join(DATA_DIR, "data_*.json"))
     if not json_files: return {}
@@ -95,49 +234,8 @@ def load_previous_data():
             return json.load(f)
     except: return {}
 
-def calculate_similarity(text1, text2):
-    if not text1 or not text2: return 0.0
-    return difflib.SequenceMatcher(None, text1, text2).ratio()
-
-# Side-by-Side Diff 생성
-def check_update_same_url(prev, curr):
-    reasons = []
-    diff_html = ""
-    
-    if prev.get('title', '').strip() != curr.get('title', '').strip():
-        reasons.append("제목 변경")
-    
-    prev_txt = get_clean_text(prev.get('content', ''))
-    curr_txt = get_clean_text(curr.get('content', ''))
-    
-    if prev_txt and curr_txt:
-        sim = calculate_similarity(prev_txt, curr_txt)
-        if sim < 1.0: 
-            reasons.append("본문 수정")
-            diff_html = f"""
-            <div style="display:flex; gap:10px; margin-top:10px;">
-                <div style="flex:1; background:#ffeef0; padding:10px; border-radius:5px;">
-                    <strong style="color:red;">[이전]</strong>
-                    <div style="font-size:13px; line-height:1.4; max-height:200px; overflow-y:auto;">{html.escape(prev_txt[:500])}...</div>
-                </div>
-                <div style="flex:1; background:#e6fffa; padding:10px; border-radius:5px;">
-                    <strong style="color:green;">[현재]</strong>
-                    <div style="font-size:13px; line-height:1.4; max-height:200px; overflow-y:auto;">{html.escape(curr_txt[:500])}...</div>
-                </div>
-            </div>
-            """
-
-    if prev.get('img', '').strip() != curr.get('img', '').strip():
-        reasons.append("썸네일 변경")
-            
-    if reasons: 
-        return {"msg": f"{', '.join(reasons)}", "html": diff_html}
-    return None
-
-# =========================================================
-# [Deep Crawler] 상세 수집
-# =========================================================
-def extract_deep_events(driver, site_name, keyword_list, onclick_pattern=None, base_url=""):
+# [V62 Update] 이미지 추출 로직 교체
+def extract_deep_events(driver, site_name, keyword_list, onclick_pattern=None, base_url="", target_selector=None):
     collected_data = {}
     try:
         time.sleep(4)
@@ -190,9 +288,17 @@ def extract_deep_events(driver, site_name, keyword_list, onclick_pattern=None, b
                 
                 if "404" in driver.title or "페이지를 찾을 수" in driver.page_source: continue
 
-                content_html = clean_html(driver.page_source)
-                page_title = ""
+                content_html = ""
+                if target_selector:
+                    try:
+                        elem = WebDriverWait(driver, 3).until(EC.presence_of_element_located((By.CSS_SELECTOR, target_selector)))
+                        content_html = clean_html(elem.get_attribute('outerHTML'))
+                    except:
+                        content_html = clean_html(driver.page_source)
+                else:
+                    content_html = clean_html(driver.page_source)
                 
+                page_title = ""
                 try: page_title = driver.find_element(By.TAG_NAME, "h1").text.strip()
                 except: pass
                 
@@ -201,18 +307,8 @@ def extract_deep_events(driver, site_name, keyword_list, onclick_pattern=None, b
                     except: pass
                 if not page_title: page_title = driver.title.strip()
                 
-                img_src = ""
-                try:
-                    meta_img = driver.find_element(By.CSS_SELECTOR, "meta[property='og:image']")
-                    img_src = meta_img.get_attribute("content")
-                except:
-                    try:
-                        imgs = driver.find_elements(By.CSS_SELECTOR, "div.content img, div.view_content img")
-                        for i in imgs:
-                            if i.size['width'] > 200:
-                                img_src = i.get_attribute("src")
-                                break
-                    except: pass
+                # [V62] 개선된 이미지 추출 함수 호출
+                img_src = get_best_image(driver, base_url)
 
                 if "당첨" in page_title or "발표" in page_title: continue
 
@@ -230,7 +326,14 @@ def extract_deep_events(driver, site_name, keyword_list, onclick_pattern=None, b
 def extract_single_page_content(driver, selector):
     try:
         container = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
-        return {driver.current_url: {"title": "SKT Air 메인", "img": "", "content": clean_html(container.get_attribute('outerHTML'))}}
+        # SKT Air의 경우 메인 배너가 이미지일 확률이 높음
+        img_src = ""
+        try: 
+            img = container.find_element(By.TAG_NAME, "img")
+            img_src = img.get_attribute("src")
+        except: pass
+        
+        return {driver.current_url: {"title": "SKT Air 메인", "img": img_src, "content": clean_html(container.get_attribute('outerHTML'))}}
     except: return {}
 
 def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_selector=None):
@@ -242,6 +345,7 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
     keywords = []
     onclick = None
     base = ""
+    # Base URL 정의 (상대 경로 이미지 복구용)
     if site_name == "U+ 유모바일": keywords = ["event", "benefit"]; base = "https://www.uplusumobile.com"
     elif site_name == "KTM 모바일": keywords = ["eventDetail"]; base = "https://www.ktmmobile.com"
     elif site_name == "스카이라이프": keywords = ["/event/"]; base = "https://www.skylife.co.kr"
@@ -266,7 +370,7 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
         time.sleep(3)
         remove_popups(driver)
         
-        page_data = extract_deep_events(driver, site_name, keywords, onclick, base)
+        page_data = extract_deep_events(driver, site_name, keywords, onclick, base, target_selector)
         
         new_cnt = 0
         for href, info in page_data.items():
@@ -282,28 +386,24 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
     return collected_items
 
 # =========================================================
-# [대시보드] 차트 시각화 (변동 현황 + 시계열 추이)
+# [대시보드] 차트 시각화 및 리포트
 # =========================================================
 def update_index_page(change_stats):
     print("📊 대시보드(차트) 업데이트 중...")
     report_files = glob.glob(os.path.join(REPORT_DIR, "report_*.html"))
     report_files.sort(reverse=True)
     
-    # 1. 차트 데이터 준비: 오늘 변동 현황 (Stacked Bar)
     labels = list(change_stats.keys())
     new_counts = [v['new'] for v in change_stats.values()]
     updated_counts = [v['updated'] for v in change_stats.values()]
     deleted_counts = [v['deleted'] for v in change_stats.values()]
 
-    # 2. 차트 데이터 준비: 7일간 추이 (Line Chart)
-    # 과거 7일 데이터 로드
     history_files = sorted(glob.glob(os.path.join(DATA_DIR, "data_*.json")))[-7:]
     history_dates = []
     history_series = {name: [] for name in labels}
     
     for h_file in history_files:
         try:
-            # 파일명에서 날짜 추출 (data_20240203_120000.json -> 02/03)
             date_str = os.path.basename(h_file).split('_')[1]
             formatted_date = f"{date_str[4:6]}/{date_str[6:8]}"
             history_dates.append(formatted_date)
@@ -314,7 +414,6 @@ def update_index_page(change_stats):
                     history_series[name].append(len(d.get(name, {})))
         except: pass
 
-    # 시계열 데이터셋 생성 (색상 팔레트 사용)
     colors = ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF', '#FF9F40', '#E7E9ED']
     line_datasets = []
     for idx, (name, data) in enumerate(history_series.items()):
@@ -329,7 +428,6 @@ def update_index_page(change_stats):
     chart_script = f"""
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
-        // Chart 1: 오늘의 변동 현황 (Stacked Bar)
         const ctx1 = document.getElementById('changeChart');
         new Chart(ctx1, {{
             type: 'bar',
@@ -348,7 +446,6 @@ def update_index_page(change_stats):
             }}
         }});
 
-        // Chart 2: 7일간 이벤트 총량 추이 (Line)
         const ctx2 = document.getElementById('trendChart');
         new Chart(ctx2, {{
             type: 'line',
@@ -410,11 +507,14 @@ def update_index_page(change_stats):
     with open(os.path.join(DOCS_DIR, "index.html"), "w", encoding="utf-8") as f: f.write(index_html)
     with open(os.path.join(DOCS_DIR, ".nojekyll"), "w") as f: f.write("")
 
+# =========================================================
+# [메인] 실행 로직
+# =========================================================
 def main():
     try:
         driver = setup_driver()
         competitors = [
-            {"name": "SKT 다이렉트", "url": "https://shop.tworld.co.kr/exhibition/submain", "param": None, "selector": ""},
+            {"name": "SKT 다이렉트", "url": "https://shop.tworld.co.kr/exhibition/submain", "param": None, "selector": "#contents"},
             {"name": "SKT Air", "url": "https://sktair-event.com/", "param": None, "selector": "#app > div > section.content"},
             {"name": "U+ 유모바일", "url": "https://www.uplusumobile.com/event-benefit/event/ongoing", "param": None, "selector": ""},
             {"name": "KTM 모바일", "url": "https://www.ktmmobile.com/event/eventBoardList.do", "param": None, "selector": ""},
@@ -425,7 +525,6 @@ def main():
         
         yesterday_results = load_previous_data()
         today_results = {}
-        # 대시보드용 변동 통계 (신규/수정/삭제 건수)
         change_stats = {comp['name']: {'new': 0, 'updated': 0, 'deleted': 0} for comp in competitors}
         
         for comp in competitors:
@@ -445,7 +544,6 @@ def main():
         company_summary = []
         
         for name, pages in today_results.items():
-            site_change_count = 0 
             old_pages = yesterday_results.get(name, {})
             
             common_urls = set(pages.keys()) & set(old_pages.keys())
@@ -471,6 +569,7 @@ def main():
                 new_item = pages[new_url]
                 for old_url in list(real_deleted):
                     old_item = old_pages[old_url]
+                    
                     total_score = (calculate_similarity(new_item.get('title'), old_item.get('title')) * 0.4) + \
                                   (calculate_similarity(get_clean_text(new_item.get('content')), get_clean_text(old_item.get('content'))) * 0.6)
                     
@@ -485,7 +584,6 @@ def main():
             for url in real_new: list_new.append({"url": url, "data": pages[url]})
             for url in real_deleted: list_deleted.append({"url": url, "data": old_pages[url]})
 
-            # 4. 통계 집계 (for Chart 1)
             change_stats[name]['new'] = len(list_new)
             change_stats[name]['updated'] = len(list_updated)
             change_stats[name]['deleted'] = len(list_deleted)
@@ -518,17 +616,14 @@ def main():
                 total_change_count += cnt
                 company_summary.append(f"{name}({cnt})")
 
-        # 6. Final Outputs
         summary_text = f"총 {total_change_count}건 변동 ({', '.join(company_summary)})" if total_change_count > 0 else "특이사항 없음"
         report_header = f"<h1>📅 {DISPLAY_DATE} 리포트</h1><div><h3>📊 {summary_text}</h3></div><hr>"
         filename = f"report_{FILE_TIMESTAMP}.html"
         
         with open(os.path.join(REPORT_DIR, filename), "w", encoding="utf-8") as f: f.write(report_header + report_body)
         
-        # [V58] 대시보드(차트) 업데이트 호출 (통계 전달)
         update_index_page(change_stats)
         
-        # 전체 목록 (그리드)
         full_list_html = f"<h1>📂 {DISPLAY_DATE} 전체 목록</h1><hr>"
         for name, pages in today_results.items():
             full_list_html += f"<h3>{name} ({len(pages)}개)</h3><div style='display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:15px;'>"
@@ -545,11 +640,15 @@ def main():
         list_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{list_filename}"
         
         payload = {"text": f"📢 *[KST {DISPLAY_TIME}] 경쟁사 동향 보고* \n\n✅ *요약:* {summary_text}\n\n👉 *변경 리포트:* {report_url}\n🗂️ *전체 목록:* {list_url}\n📂 *대시보드:* {dashboard_url}"}
-        if SLACK_WEBHOOK_URL: requests.post(SLACK_WEBHOOK_URL, json=payload)
+        
+        send_slack_alert(SLACK_WEBHOOK_URL, payload)
+        
         print("✅ 완료")
 
-    except Exception as e: print(f"🔥 Error: {traceback.format_exc()}")
+    except Exception as e: 
+        print(f"🔥 Error: {traceback.format_exc()}")
+        error_payload = {"text": f"🚨 *[Error]* 크롤링 중 오류 발생\n```{str(e)}```"}
+        send_slack_alert(SLACK_WEBHOOK_URL, error_payload)
 
 if __name__ == "__main__":
     main()
-
