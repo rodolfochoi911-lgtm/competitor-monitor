@@ -34,26 +34,32 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: python main.py
 
-      # 👇 [수정됨] 들여쓰기 2칸 더 들어감 & steps 하위로 정렬
       - name: Upload Debug Screenshots
-        if: always()  # 에러가 나도 무조건 실행
+        if: always()  # 스크립트 에러 발생 시에도 스크린샷은 업로드
         uses: actions/upload-artifact@v4
         with:
           name: debug-screenshots
-          path: docs/reports/*.png  # 이 경로에 있는 png 파일을 저장함
+          path: docs/reports/*.png 
 
       - name: Commit and Push Results
         run: |
           git config --global user.name "AutoBot"
           git config --global user.email "bot@github.com"
+          
+          # 1. 변경된 데이터와 문서 파일 추가
           git add data/ docs/
           
+          # 2. 변경사항 확인 (없으면 종료)
           if git diff --staged --quiet; then
             echo "No changes to commit."
             exit 0
           fi
           
+          # 3. 커밋
           git commit -m "Update Report: $(date +'%Y-%m-%d %H:%M:%S')"
           
-          git pull --rebase
-          git push
+          # 4. [핵심 수정] 충돌 발생 시 '내 변경사항(Theirs)'을 우선하여 Rebase
+          git pull --rebase -Xtheirs origin main
+          
+          # 5. 최종 푸시
+          git push origin main
