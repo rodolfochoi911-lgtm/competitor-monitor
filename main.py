@@ -1,7 +1,7 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V65_Restored)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V66)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-02-05 (V65: 슬랙 알람 포맷 원복 + 전체 목록 파일 생성 로직 복구)
+[업데이트] 2026-02-05 (V66: 리포트 가시성 개선 + 제목/썸네일 수집 강화 + 대시보드 차트 복구)
 """
 
 import os
@@ -66,15 +66,21 @@ def calculate_similarity(text1, text2):
     return difflib.SequenceMatcher(None, text1, text2).ratio()
 
 # =========================================================
-# [핵심] 노이즈 제거 (타이머/카운트다운 차단)
+# [핵심] 노이즈 제거 (스카이라이프 추가됨)
 # =========================================================
 def clean_noise(text):
     if not text: return ""
+    # 1. 조회수 및 스카이라이프 구경꾼 제거
     text = re.sub(r'(조회|view|읽음)(수)?[\s:.]*[\d,]+', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'[\d,]+명의\s*고객님이\s*(구경|보고)', '', text) # [V66] 스카이라이프 노이즈
+    
+    # 2. 타이머 패턴 제거
     text = re.sub(r'\d{1,2}\s*[:시]\s*\d{1,2}(\s*[:분]\s*\d{1,2})?', '', text)
     text = re.sub(r'D-[\dDay]+', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\d+(일|시간|분|초)\s*(남음|남았|전|후)', '', text)
     text = re.sub(r'(마감|종료|이벤트)\s*(까지)?', '', text)
+    
+    # 3. 기타 정리
     text = re.sub(r'Loading.*', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
@@ -92,31 +98,53 @@ def get_clean_text(html_content):
     return soup.get_text(separator=" ", strip=True)
 
 # =========================================================
-# [시각화] 변경사항 형광펜 하이라이팅
+# [시각화] 변경사항 리포트 생성 (이전/현재 분리 View)
 # =========================================================
-def generate_diff_html(old_text, new_text):
+def generate_diff_view(old_text, new_text):
+    """
+    [V66] 이전 텍스트와 현재 텍스트를 위아래로 분리하여 보여주되,
+    각 영역 내부에서 변경된 단어에 형광펜(빨강/초록) 칠을 함.
+    """
     matcher = difflib.SequenceMatcher(None, old_text, new_text)
-    result_html = []
+    old_html = []
+    new_html = []
     has_change = False
+    
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
-            content = old_text[i1:i2]
-            result_html.append(content[:30] + " ... " + content[-30:] if len(content) > 60 else content)
-        elif tag in ('replace', 'delete', 'insert'):
+            # 변경 없는 부분 (문맥 유지)
+            content = html.escape(old_text[i1:i2])
+            if len(content) > 50: content = content[:25] + " ... " + content[-25:]
+            old_html.append(content)
+            new_html.append(content)
+        elif tag == 'replace':
             has_change = True
-            old_part = html.escape(old_text[i1:i2]) if i1 != i2 else ""
-            new_part = html.escape(new_text[j1:j2]) if j1 != j2 else ""
-            if tag == 'replace':
-                result_html.append(f'<span style="background:#ffeef0; text-decoration:line-through; color:#999;">{old_part}</span> → <span style="background:#e6fffa; color:#006600; font-weight:bold; padding:0 4px;">{new_part}</span>')
-            elif tag == 'delete':
-                result_html.append(f'<span style="background:#ffeef0; text-decoration:line-through; color:#999;">{old_part}</span>')
-            elif tag == 'insert':
-                result_html.append(f'<span style="background:#e6fffa; color:#006600; font-weight:bold; padding:0 4px;">{new_part}</span>')
-    return f'<div style="font-size:13px; line-height:1.6; color:#444; background:#fafafa; padding:12px; border-radius:8px; border-left:4px solid #3498db; margin-top:10px;">{" ".join(result_html)}</div>' if has_change else ""
+            old_part = html.escape(old_text[i1:i2])
+            new_part = html.escape(new_text[j1:j2])
+            old_html.append(f'<span style="background:#ffeef0; color:#c0392b; text-decoration:line-through;">{old_part}</span>')
+            new_html.append(f'<span style="background:#e6fffa; color:#27ae60; font-weight:bold;">{new_part}</span>')
+        elif tag == 'delete':
+            has_change = True
+            old_part = html.escape(old_text[i1:i2])
+            old_html.append(f'<span style="background:#ffeef0; color:#c0392b; text-decoration:line-through;">{old_part}</span>')
+        elif tag == 'insert':
+            has_change = True
+            new_part = html.escape(new_text[j1:j2])
+            new_html.append(f'<span style="background:#e6fffa; color:#27ae60; font-weight:bold;">{new_part}</span>')
+
+    if not has_change: return ""
+    
+    return f"""
+    <div style="margin-top:10px; border:1px solid #eee; border-radius:5px; overflow:hidden;">
+        <div style="background:#fff5f5; padding:8px; border-bottom:1px solid #eee; color:#c0392b; font-size:12px;"><b>[이전]</b> {''.join(old_html)}</div>
+        <div style="background:#f0fcf5; padding:8px; color:#27ae60; font-size:12px;"><b>[현재]</b> {''.join(new_html)}</div>
+    </div>
+    """
 
 def check_update_same_url(prev, curr):
     reasons = []
     diff_html = ""
+    
     if prev.get('title', '').strip() != curr.get('title', '').strip():
         reasons.append("제목 변경")
         diff_html += f"<div style='margin-bottom:8px;'><b>제목:</b> {prev.get('title')} <span style='color:blue;'>▶</span> <b>{curr.get('title')}</b></div>"
@@ -124,14 +152,15 @@ def check_update_same_url(prev, curr):
     p_clean, c_clean = clean_noise(get_clean_text(prev.get('content', ''))), clean_noise(get_clean_text(curr.get('content', '')))
     if p_clean and c_clean and calculate_similarity(p_clean, c_clean) < 1.0:
         reasons.append("본문 수정")
-        diff_html += generate_diff_html(p_clean, c_clean)
+        diff_html += generate_diff_view(p_clean, c_clean)
         
     if prev.get('img', '').strip() != curr.get('img', '').strip():
         reasons.append("썸네일 변경")
+        
     return {"msg": f"{', '.join(reasons)}", "html": diff_html} if reasons else None
 
 # =========================================================
-# [크롤러] 목록 기반 수집 로직
+# [크롤러] 목록 기반 수집 로직 (썸네일/제목 강화)
 # =========================================================
 def setup_driver():
     options = uc.ChromeOptions()
@@ -161,19 +190,36 @@ def extract_list_with_thumbnails(driver, site_name, keyword_list, onclick_patter
             if site_name == "KTM 모바일" and not final_url:
                 seq = link.get('ntcartseq')
                 if seq: final_url = f"https://www.ktmmobile.com/event/eventDetail.do?ntcartSeq={seq}"
+            
             if final_url and "login" not in final_url:
+                # [V66] 썸네일 찾기 강화: <a> 내부뿐만 아니라 부모/주변도 탐색
                 img = link.find('img')
+                if not img:
+                    # 부모나 형제 태그에서 이미지 찾기 (구조가 복잡한 사이트 대비)
+                    try: img = link.find_parent().find('img') 
+                    except: pass
+                
                 thumb = urljoin(base_url, img.get('src') or img.get('data-src')) if img else ""
                 if final_url not in targets or (thumb and not targets[final_url]): targets[final_url] = thumb
     except: pass
+    
     final_data = {}
     for url, thumb in targets.items():
         try:
             driver.get(url); time.sleep(2)
             try: cont = clean_html(driver.find_element(By.CSS_SELECTOR, target_selector).get_attribute('outerHTML')) if target_selector else clean_html(driver.page_source)
             except: cont = clean_html(driver.page_source)
-            try: title = driver.find_element(By.TAG_NAME, "h1").text.strip()
-            except: title = driver.title.strip()
+            
+            # [V66] 제목 추출 로직 복구 (H1 외 다양한 선택자 시도)
+            title = ""
+            title_candidates = ["h1", ".view-tit", ".event-view-title", ".board-view-title", "h2", ".subject"]
+            for t_sel in title_candidates:
+                try: 
+                    title = driver.find_element(By.CSS_SELECTOR, t_sel).text.strip()
+                    if title: break
+                except: pass
+            if not title: title = driver.title.strip()
+            
             final_data[url] = {"title": title, "img": thumb, "content": cont[:15000]}
         except: continue
     return final_data
@@ -205,14 +251,49 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
         if not pagination_param: break
     return collected
 
-def update_index_page():
+# =========================================================
+# [대시보드] 차트 복구 (V66)
+# =========================================================
+def update_index_page(change_stats):
     report_files = sorted(glob.glob(os.path.join(REPORT_DIR, "report_*.html")), reverse=True)
+    
+    # [V66] 차트 데이터 준비
+    labels = list(change_stats.keys())
+    new_d = [v['new'] for v in change_stats.values()]
+    upd_d = [v['updated'] for v in change_stats.values()]
+    del_d = [v['deleted'] for v in change_stats.values()]
+    
+    chart_script = f"""
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+    const ctx = document.getElementById('myChart');
+    new Chart(ctx, {{
+        type: 'bar',
+        data: {{
+            labels: {json.dumps(labels)},
+            datasets: [
+                {{label: '신규', data: {json.dumps(new_d)}, backgroundColor: '#2ecc71'}},
+                {{label: '변경', data: {json.dumps(upd_d)}, backgroundColor: '#f1c40f'}},
+                {{label: '종료', data: {json.dumps(del_d)}, backgroundColor: '#e74c3c'}}
+            ]
+        }},
+        options: {{scales: {{x: {{stacked: true}}, y: {{stacked: true}}}}}}
+    }});
+    </script>
+    """
+    
     index_html = f"""
     <html><head><meta charset='utf-8'><title>Dashboard</title>
-    <style>body{{font-family:sans-serif; padding:40px; background:#f5f7fa;}} .card{{background:white; padding:25px; border-radius:15px; box-shadow:0 5px 15px rgba(0,0,0,0.05);}}</style>
-    </head><body><div class='card'><h1>📊 모니터링 관제탑</h1>
+    <style>body{{font-family:sans-serif; padding:40px; background:#f5f7fa;}} .card{{background:white; padding:25px; border-radius:15px; box-shadow:0 5px 15px rgba(0,0,0,0.05); margin-bottom:20px;}}</style>
+    </head><body>
+    <div class='card'><h1>📊 모니터링 관제탑</h1>
+    <canvas id="myChart" style="max-height:300px;"></canvas>
+    </div>
+    <div class='card'><h3>📑 리포트 히스토리</h3>
     {''.join([f"<div style='margin-bottom:10px;'>📅 <a href='reports/{os.path.basename(f)}'>{os.path.basename(f)}</a></div>" for f in report_files[:15]])}
-    </div></body></html>"""
+    </div>
+    {chart_script}
+    </body></html>"""
     with open(os.path.join(DOCS_DIR, "index.html"), "w", encoding="utf-8") as f: f.write(index_html)
 
 # =========================================================
@@ -232,6 +313,8 @@ def main():
         ]
         yesterday = load_previous_data()
         today = {}
+        change_stats = {c['name']: {'new': 0, 'updated': 0, 'deleted': 0} for c in competitors}
+        
         for c in competitors:
             try:
                 res = crawl_site_logic(driver, c['name'], c['url'], c['param'], c['selector'])
@@ -240,7 +323,6 @@ def main():
         driver.quit()
         with open(os.path.join(DATA_DIR, f"data_{FILE_TIMESTAMP}.json"), "w", encoding="utf-8") as f: json.dump(today, f, ensure_ascii=False)
         
-        # 리포트 생성
         report_body, total_chg, summary = "", 0, []
         for name, pages in today.items():
             old = yesterday.get(name, {})
@@ -248,7 +330,11 @@ def main():
             for url in (set(pages.keys()) & set(old.keys())):
                 diff = check_update_same_url(old[url], pages[url])
                 if diff: list_upd.append({"url": url, "reason": diff['msg'], "data": pages[url], "diff_html": diff['html']})
+            
+            # 통계 집계
+            change_stats[name].update({'new': len(list_new), 'updated': len(list_upd), 'deleted': len(list_del)})
             cnt = len(list_new) + len(list_upd) + len(list_del)
+            
             if cnt > 0:
                 s_html = f"<h2>🏢 {name} ({cnt}건)</h2>"
                 for i in list_new: s_html += f"<div style='background:#f9fff9; padding:10px; border:1px solid #cfc; margin-bottom:10px;'><img src='{i['data']['img']}' style='height:60px; margin-right:10px;'><b>[신규] {i['data']['title']}</b><br><a href='{i['url']}'>이동</a></div>"
@@ -259,30 +345,28 @@ def main():
         rep_file = f"report_{FILE_TIMESTAMP}.html"
         with open(os.path.join(REPORT_DIR, rep_file), "w", encoding="utf-8") as f: f.write(f"<html><head><meta charset='utf-8'></head><body><h1>📅 {DISPLAY_DATE} 리포트</h1>{report_body}</body></html>")
         
-        # [복구됨] 전체 목록 파일 생성 (슬랙 링크용)
-        list_html = f"<h1>📂 {DISPLAY_DATE} 전체 목록</h1><hr>"
+        # 목록 파일 복구
+        list_html = f"<h1>📂 {DISPLAY_DATE} 목록</h1><hr>"
         for name, pages in today.items():
-            list_html += f"<h3>{name} ({len(pages)}개)</h3><div style='display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:15px;'>"
-            for url, data in pages.items():
-                img = f"<img src='{data.get('img','')}' style='width:100%; height:120px; object-fit:cover; border-radius:5px; border:1px solid #eee;'>" if data.get('img') else "<div style='width:100%; height:120px; background:#f0f0f0; display:flex; align-items:center; justify-content:center;'>No Image</div>"
-                list_html += f"<div style='border:1px solid #ddd; padding:10px;'><a href='{url}' target='_blank' style='text-decoration:none; color:#333;'>{img}<p style='margin:10px 0 0 0; font-weight:bold; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;'>{data.get('title')}</p></a></div>"
-            list_html += "</div><hr>"
+            list_html += f"<h3>{name}</h3><div style='display:grid; grid-template-columns:1fr 1fr; gap:10px;'>"
+            for u, d in pages.items(): list_html += f"<div style='border:1px solid #eee; padding:5px;'><a href='{u}'><img src='{d['img']}' style='height:50px;'> {d['title']}</a></div>"
+            list_html += "</div>"
         list_file = f"list_{FILE_TIMESTAMP}.html"
         with open(os.path.join(REPORT_DIR, list_file), "w", encoding="utf-8") as f: f.write(list_html)
 
-        update_index_page()
+        update_index_page(change_stats)
         
-        # [복구됨] 슬랙 알람 포맷 (풍성한 버전)
-        dashboard_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/"
-        report_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{rep_file}"
-        list_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{list_file}"
-        summary_text = f"총 {total_chg}건 변동 ({', '.join(summary)})" if total_chg > 0 else "특이사항 없음"
+        # 슬랙 알림 복구 (링크 3종 포함)
+        db_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/"
+        rp_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{rep_file}"
+        ls_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{list_file}"
+        txt = f"총 {total_chg}건 변동 ({', '.join(summary)})" if total_chg > 0 else "특이사항 없음"
         
         payload = {
-            "text": f"📢 *[KST {DISPLAY_TIME}] 경쟁사 동향 보고* \n\n✅ *요약:* {summary_text}\n\n👉 *변경 리포트:* {report_url}\n🗂️ *전체 목록:* {list_url}\n📂 *대시보드:* {dashboard_url}"
+            "text": f"📢 *[KST {DISPLAY_TIME}] 경쟁사 동향 보고* \n\n✅ *요약:* {txt}\n\n👉 *변경 리포트:* {rp_url}\n🗂️ *전체 목록:* {ls_url}\n📂 *대시보드:* {db_url}"
         }
         send_slack_alert(SLACK_WEBHOOK_URL, payload)
-        print("✅ 모든 작업 완료")
+        print("✅ 완료")
 
     except Exception as e:
         print(f"🔥 Error: {traceback.format_exc()}")
