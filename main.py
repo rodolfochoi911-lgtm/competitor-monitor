@@ -1,7 +1,7 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V64_Fixed)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V65_Restored)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-02-05 (V64_Fixed: NameError 수정 및 모든 유틸리티 함수 통합)
+[업데이트] 2026-02-05 (V65: 슬랙 알람 포맷 원복 + 전체 목록 파일 생성 로직 복구)
 """
 
 import os
@@ -44,7 +44,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(REPORT_DIR, exist_ok=True)
 
 # =========================================================
-# [유틸리티] 기본 도구함
+# [유틸리티] 도구함
 # =========================================================
 def send_slack_alert(webhook_url, payload):
     if not webhook_url: return
@@ -53,7 +53,6 @@ def send_slack_alert(webhook_url, payload):
     except: pass
 
 def load_previous_data():
-    """어제 수집된 가장 최신 데이터를 로드함"""
     json_files = glob.glob(os.path.join(DATA_DIR, "data_*.json"))
     if not json_files: return {}
     json_files.sort()
@@ -67,18 +66,15 @@ def calculate_similarity(text1, text2):
     return difflib.SequenceMatcher(None, text1, text2).ratio()
 
 # =========================================================
-# [핵심] 노이즈 제거 및 텍스트 처리
+# [핵심] 노이즈 제거 (타이머/카운트다운 차단)
 # =========================================================
 def clean_noise(text):
     if not text: return ""
-    # 1. 조회수 제거
     text = re.sub(r'(조회|view|읽음)(수)?[\s:.]*[\d,]+', '', text, flags=re.IGNORECASE)
-    # 2. 타이머 패턴 제거 (D-Day, 시간 등)
     text = re.sub(r'\d{1,2}\s*[:시]\s*\d{1,2}(\s*[:분]\s*\d{1,2})?', '', text)
     text = re.sub(r'D-[\dDay]+', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\d+(일|시간|분|초)\s*(남음|남았|전|후)', '', text)
     text = re.sub(r'(마감|종료|이벤트)\s*(까지)?', '', text)
-    # 3. 공백 정리
     text = re.sub(r'Loading.*', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
@@ -96,7 +92,7 @@ def get_clean_text(html_content):
     return soup.get_text(separator=" ", strip=True)
 
 # =========================================================
-# [시각화] 변경사항 하이라이팅
+# [시각화] 변경사항 형광펜 하이라이팅
 # =========================================================
 def generate_diff_html(old_text, new_text):
     matcher = difflib.SequenceMatcher(None, old_text, new_text)
@@ -124,10 +120,12 @@ def check_update_same_url(prev, curr):
     if prev.get('title', '').strip() != curr.get('title', '').strip():
         reasons.append("제목 변경")
         diff_html += f"<div style='margin-bottom:8px;'><b>제목:</b> {prev.get('title')} <span style='color:blue;'>▶</span> <b>{curr.get('title')}</b></div>"
+    
     p_clean, c_clean = clean_noise(get_clean_text(prev.get('content', ''))), clean_noise(get_clean_text(curr.get('content', '')))
     if p_clean and c_clean and calculate_similarity(p_clean, c_clean) < 1.0:
         reasons.append("본문 수정")
         diff_html += generate_diff_html(p_clean, c_clean)
+        
     if prev.get('img', '').strip() != curr.get('img', '').strip():
         reasons.append("썸네일 변경")
     return {"msg": f"{', '.join(reasons)}", "html": diff_html} if reasons else None
@@ -207,9 +205,6 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
         if not pagination_param: break
     return collected
 
-# =========================================================
-# [대시보드] 인덱스 업데이트
-# =========================================================
 def update_index_page():
     report_files = sorted(glob.glob(os.path.join(REPORT_DIR, "report_*.html")), reverse=True)
     index_html = f"""
@@ -244,6 +239,8 @@ def main():
             except: today[c['name']] = yesterday.get(c['name'], {})
         driver.quit()
         with open(os.path.join(DATA_DIR, f"data_{FILE_TIMESTAMP}.json"), "w", encoding="utf-8") as f: json.dump(today, f, ensure_ascii=False)
+        
+        # 리포트 생성
         report_body, total_chg, summary = "", 0, []
         for name, pages in today.items():
             old = yesterday.get(name, {})
@@ -258,10 +255,35 @@ def main():
                 for i in list_upd: s_html += f"<div style='background:#fffcf5; padding:10px; border:1px solid #fc9; margin-bottom:10px;'><b>[변경] {i['data']['title']}</b><br>{i['diff_html']}<br><a href='{i['url']}'>이동</a></div>"
                 for i in list_del: s_html += f"<div style='background:#fff5f5; padding:10px; border:1px solid #fcc; margin-bottom:10px; color:#999;'><strike>{i['data']['title']}</strike> (종료)</div>"
                 report_body += s_html + "<hr>"; total_chg += cnt; summary.append(f"{name}({cnt})")
+        
         rep_file = f"report_{FILE_TIMESTAMP}.html"
         with open(os.path.join(REPORT_DIR, rep_file), "w", encoding="utf-8") as f: f.write(f"<html><head><meta charset='utf-8'></head><body><h1>📅 {DISPLAY_DATE} 리포트</h1>{report_body}</body></html>")
+        
+        # [복구됨] 전체 목록 파일 생성 (슬랙 링크용)
+        list_html = f"<h1>📂 {DISPLAY_DATE} 전체 목록</h1><hr>"
+        for name, pages in today.items():
+            list_html += f"<h3>{name} ({len(pages)}개)</h3><div style='display:grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:15px;'>"
+            for url, data in pages.items():
+                img = f"<img src='{data.get('img','')}' style='width:100%; height:120px; object-fit:cover; border-radius:5px; border:1px solid #eee;'>" if data.get('img') else "<div style='width:100%; height:120px; background:#f0f0f0; display:flex; align-items:center; justify-content:center;'>No Image</div>"
+                list_html += f"<div style='border:1px solid #ddd; padding:10px;'><a href='{url}' target='_blank' style='text-decoration:none; color:#333;'>{img}<p style='margin:10px 0 0 0; font-weight:bold; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;'>{data.get('title')}</p></a></div>"
+            list_html += "</div><hr>"
+        list_file = f"list_{FILE_TIMESTAMP}.html"
+        with open(os.path.join(REPORT_DIR, list_file), "w", encoding="utf-8") as f: f.write(list_html)
+
         update_index_page()
-        send_slack_alert(SLACK_WEBHOOK_URL, {"text": f"📢 *[모니터링]* 총 {total_chg}건 변동 ({', '.join(summary)})\n👉 <https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{rep_file}|리포트 보기>"})
+        
+        # [복구됨] 슬랙 알람 포맷 (풍성한 버전)
+        dashboard_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/"
+        report_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{rep_file}"
+        list_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{list_file}"
+        summary_text = f"총 {total_chg}건 변동 ({', '.join(summary)})" if total_chg > 0 else "특이사항 없음"
+        
+        payload = {
+            "text": f"📢 *[KST {DISPLAY_TIME}] 경쟁사 동향 보고* \n\n✅ *요약:* {summary_text}\n\n👉 *변경 리포트:* {report_url}\n🗂️ *전체 목록:* {list_url}\n📂 *대시보드:* {dashboard_url}"
+        }
+        send_slack_alert(SLACK_WEBHOOK_URL, payload)
+        print("✅ 모든 작업 완료")
+
     except Exception as e:
         print(f"🔥 Error: {traceback.format_exc()}")
         send_slack_alert(SLACK_WEBHOOK_URL, {"text": f"🚨 에러: {str(e)}"})
