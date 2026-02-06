@@ -1,7 +1,7 @@
 """
-[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V66)
+[프로젝트] 경쟁사 프로모션 모니터링 자동화 시스템 (V68)
 [작성자] 최지원 (GTM Strategy)
-[업데이트] 2026-02-05 (V66: 리포트 가시성 개선 + 제목/썸네일 수집 강화 + 대시보드 차트 복구)
+[업데이트] 2026-02-06 (V68: 변경 리포트 내 '변경 사유' 텍스트 표시 누락 수정)
 """
 
 import os
@@ -43,6 +43,18 @@ DISPLAY_TIME = NOW.strftime("%H:%M:%S")
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(REPORT_DIR, exist_ok=True)
 
+# [V67 유지] 수집 제외 블랙리스트
+EXCLUDE_URL_KEYWORDS = [
+    "guide", "recommend", "win", "closing", "point", "auth-phone", 
+    "product/plan", "copCard", "damoa", "login", "my", "faq", "logout", 
+    "support", "notice", "news", "winner",
+    "Guest", "rental", "EndList", "shopMain", 
+    "WinList", "privacy", "policy", "trouble", "material", "prevent",
+    "msafer", "cleanict", "notm", "spam", "kisa", "sktcoverage", 
+    "personInfo", "sktelink", "memberPolicy"
+]
+EXCLUDE_TITLE_KEYWORDS = ["[종료]", "종료된", "당첨자", "발표", "개인정보", "이용약관"]
+
 # =========================================================
 # [유틸리티] 도구함
 # =========================================================
@@ -66,21 +78,16 @@ def calculate_similarity(text1, text2):
     return difflib.SequenceMatcher(None, text1, text2).ratio()
 
 # =========================================================
-# [핵심] 노이즈 제거 (스카이라이프 추가됨)
+# [핵심] 노이즈 제거
 # =========================================================
 def clean_noise(text):
     if not text: return ""
-    # 1. 조회수 및 스카이라이프 구경꾼 제거
     text = re.sub(r'(조회|view|읽음)(수)?[\s:.]*[\d,]+', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'[\d,]+명의\s*고객님이\s*(구경|보고)', '', text) # [V66] 스카이라이프 노이즈
-    
-    # 2. 타이머 패턴 제거
+    text = re.sub(r'[\d,]+명의\s*고객님이\s*(구경|보고)', '', text)
     text = re.sub(r'\d{1,2}\s*[:시]\s*\d{1,2}(\s*[:분]\s*\d{1,2})?', '', text)
     text = re.sub(r'D-[\dDay]+', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\d+(일|시간|분|초)\s*(남음|남았|전|후)', '', text)
     text = re.sub(r'(마감|종료|이벤트)\s*(까지)?', '', text)
-    
-    # 3. 기타 정리
     text = re.sub(r'Loading.*', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
@@ -98,13 +105,9 @@ def get_clean_text(html_content):
     return soup.get_text(separator=" ", strip=True)
 
 # =========================================================
-# [시각화] 변경사항 리포트 생성 (이전/현재 분리 View)
+# [시각화] 변경사항 리포트 생성
 # =========================================================
 def generate_diff_view(old_text, new_text):
-    """
-    [V66] 이전 텍스트와 현재 텍스트를 위아래로 분리하여 보여주되,
-    각 영역 내부에서 변경된 단어에 형광펜(빨강/초록) 칠을 함.
-    """
     matcher = difflib.SequenceMatcher(None, old_text, new_text)
     old_html = []
     new_html = []
@@ -112,7 +115,6 @@ def generate_diff_view(old_text, new_text):
     
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == 'equal':
-            # 변경 없는 부분 (문맥 유지)
             content = html.escape(old_text[i1:i2])
             if len(content) > 50: content = content[:25] + " ... " + content[-25:]
             old_html.append(content)
@@ -160,7 +162,7 @@ def check_update_same_url(prev, curr):
     return {"msg": f"{', '.join(reasons)}", "html": diff_html} if reasons else None
 
 # =========================================================
-# [크롤러] 목록 기반 수집 로직 (썸네일/제목 강화)
+# [크롤러] 목록 기반 수집 로직
 # =========================================================
 def setup_driver():
     options = uc.ChromeOptions()
@@ -175,6 +177,11 @@ def extract_list_with_thumbnails(driver, site_name, keyword_list, onclick_patter
     try:
         time.sleep(3)
         soup = BeautifulSoup(driver.page_source, 'html.parser')
+        
+        if site_name == "SK 7세븐모바일":
+            area = soup.select_one("#ct > section")
+            if area: soup = area
+
         for link in soup.find_all('a'):
             href, onclick = link.get('href', ''), link.get('onclick', '')
             final_url = ""
@@ -191,11 +198,13 @@ def extract_list_with_thumbnails(driver, site_name, keyword_list, onclick_patter
                 seq = link.get('ntcartseq')
                 if seq: final_url = f"https://www.ktmmobile.com/event/eventDetail.do?ntcartSeq={seq}"
             
-            if final_url and "login" not in final_url:
-                # [V66] 썸네일 찾기 강화: <a> 내부뿐만 아니라 부모/주변도 탐색
+            if final_url:
+                if any(bad in final_url for bad in EXCLUDE_URL_KEYWORDS): continue
+                link_text = link.get_text()
+                if any(bad in link_text for bad in EXCLUDE_TITLE_KEYWORDS): continue
+
                 img = link.find('img')
                 if not img:
-                    # 부모나 형제 태그에서 이미지 찾기 (구조가 복잡한 사이트 대비)
                     try: img = link.find_parent().find('img') 
                     except: pass
                 
@@ -210,9 +219,8 @@ def extract_list_with_thumbnails(driver, site_name, keyword_list, onclick_patter
             try: cont = clean_html(driver.find_element(By.CSS_SELECTOR, target_selector).get_attribute('outerHTML')) if target_selector else clean_html(driver.page_source)
             except: cont = clean_html(driver.page_source)
             
-            # [V66] 제목 추출 로직 복구 (H1 외 다양한 선택자 시도)
             title = ""
-            title_candidates = ["h1", ".view-tit", ".event-view-title", ".board-view-title", "h2", ".subject"]
+            title_candidates = ["h1", ".view-tit", ".event-view-title", ".board-view-title", "h2", ".subject", ".tit", ".v_title", ".dt_tit", ".board_view_tit"]
             for t_sel in title_candidates:
                 try: 
                     title = driver.find_element(By.CSS_SELECTOR, t_sel).text.strip()
@@ -220,6 +228,8 @@ def extract_list_with_thumbnails(driver, site_name, keyword_list, onclick_patter
                 except: pass
             if not title: title = driver.title.strip()
             
+            if any(bad in title for bad in EXCLUDE_TITLE_KEYWORDS): continue
+
             final_data[url] = {"title": title, "img": thumb, "content": cont[:15000]}
         except: continue
     return final_data
@@ -252,12 +262,10 @@ def crawl_site_logic(driver, site_name, base_url, pagination_param=None, target_
     return collected
 
 # =========================================================
-# [대시보드] 차트 복구 (V66)
+# [대시보드] 차트 포함 인덱스
 # =========================================================
 def update_index_page(change_stats):
     report_files = sorted(glob.glob(os.path.join(REPORT_DIR, "report_*.html")), reverse=True)
-    
-    # [V66] 차트 데이터 준비
     labels = list(change_stats.keys())
     new_d = [v['new'] for v in change_stats.values()]
     upd_d = [v['updated'] for v in change_stats.values()]
@@ -331,24 +339,33 @@ def main():
                 diff = check_update_same_url(old[url], pages[url])
                 if diff: list_upd.append({"url": url, "reason": diff['msg'], "data": pages[url], "diff_html": diff['html']})
             
-            # 통계 집계
             change_stats[name].update({'new': len(list_new), 'updated': len(list_upd), 'deleted': len(list_del)})
             cnt = len(list_new) + len(list_upd) + len(list_del)
             
             if cnt > 0:
                 s_html = f"<h2>🏢 {name} ({cnt}건)</h2>"
                 for i in list_new: s_html += f"<div style='background:#f9fff9; padding:10px; border:1px solid #cfc; margin-bottom:10px;'><img src='{i['data']['img']}' style='height:60px; margin-right:10px;'><b>[신규] {i['data']['title']}</b><br><a href='{i['url']}'>이동</a></div>"
-                for i in list_upd: s_html += f"<div style='background:#fffcf5; padding:10px; border:1px solid #fc9; margin-bottom:10px;'><b>[변경] {i['data']['title']}</b><br>{i['diff_html']}<br><a href='{i['url']}'>이동</a></div>"
+                
+                # [V68] 변경 사유(reason) 표시 복구
+                for i in list_upd: 
+                    s_html += f"""
+                    <div style='background:#fffcf5; padding:10px; border:1px solid #fc9; margin-bottom:10px;'>
+                        <b>[변경] {i['data']['title']}</b><br>
+                        <span style='color:#e67e22; font-size:12px; font-weight:bold;'>💡 {i['reason']}</span><br>
+                        {i['diff_html']}<br>
+                        <a href='{i['url']}'>이동</a>
+                    </div>
+                    """
+                
                 for i in list_del: s_html += f"<div style='background:#fff5f5; padding:10px; border:1px solid #fcc; margin-bottom:10px; color:#999;'><strike>{i['data']['title']}</strike> (종료)</div>"
                 report_body += s_html + "<hr>"; total_chg += cnt; summary.append(f"{name}({cnt})")
         
         rep_file = f"report_{FILE_TIMESTAMP}.html"
         with open(os.path.join(REPORT_DIR, rep_file), "w", encoding="utf-8") as f: f.write(f"<html><head><meta charset='utf-8'></head><body><h1>📅 {DISPLAY_DATE} 리포트</h1>{report_body}</body></html>")
         
-        # 목록 파일 복구
         list_html = f"<h1>📂 {DISPLAY_DATE} 목록</h1><hr>"
         for name, pages in today.items():
-            list_html += f"<h3>{name}</h3><div style='display:grid; grid-template-columns:1fr 1fr; gap:10px;'>"
+            list_html += f"<h3>{name} ({len(pages)}개)</h3><div style='display:grid; grid-template-columns:1fr 1fr; gap:10px;'>"
             for u, d in pages.items(): list_html += f"<div style='border:1px solid #eee; padding:5px;'><a href='{u}'><img src='{d['img']}' style='height:50px;'> {d['title']}</a></div>"
             list_html += "</div>"
         list_file = f"list_{FILE_TIMESTAMP}.html"
@@ -356,7 +373,6 @@ def main():
 
         update_index_page(change_stats)
         
-        # 슬랙 알림 복구 (링크 3종 포함)
         db_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/"
         rp_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{rep_file}"
         ls_url = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/reports/{list_file}"
