@@ -53,4 +53,5 @@ jobs:
         echo "Last Run: $(date)" > last_update.txt
         git add data/*.json data/*.csv last_update.txt
         git diff --cached --quiet && echo "변경사항 없음" || git commit -m "🚨 Daily Update: $(date)"
+        git pull --rebase origin main
         git push
