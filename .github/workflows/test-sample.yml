@@ -1,0 +1,57 @@
+# 기존 workflow 파일 (main.yml 또는 schedule.yml)
+
+name: Competitor Monitor
+
+on:
+  schedule:
+    - cron: '0 15 * * *'
+  workflow_dispatch:
+
+jobs:
+  crawl-and-analyze:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 체크아웃
+        uses: actions/checkout@v4
+      
+      - name: 🐍 Python 설정
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: 📦 의존성 설치
+        run: pip install -r requirements.txt
+      
+      - name: 🌐 Chrome 설치
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y chromium-browser chromium-chromedriver
+      
+      - name: 🚀 크롤링 실행
+        run: python main.py
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      
+      # 🆕 여기에 추가!
+      - name: 🧪 AI 분석 샘플 테스트 (25건)
+        run: |
+          if ls data/data_*.json 1> /dev/null 2>&1; then
+            python test_sample.py
+          else
+            echo "⚠️ 데이터 없음"
+          fi
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        continue-on-error: true  # 실패해도 다음 단계 진행
+      
+      - name: 🤖 AI 전체 분석 (191건)
+        run: |
+          if ls data/data_*.json 1> /dev/null 2>&1; then
+            python parser.py
+          else
+            echo "⚠️ 데이터 없음"
+          fi
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

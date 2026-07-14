@@ -1,0 +1,56 @@
+name: Daily Competitor Monitor
+on:
+  schedule:
+    - cron: '0 21 * * *'   # 한국 아침 06:00 (UTC 전날 21:00)
+    - cron: '0 1 * * *'   # 한국 오후 14:30 (UTC 05:30)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+
+    steps:
+    - name: 저장소 체크아웃
+      uses: actions/checkout@v3
+
+    - name: 파이썬 설정
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: 라이브러리 설치
+      run: pip install -r requirements.txt
+
+    # ── Step 1: 크롤러 ────────────────────────────────────────────────
+    - name: 1단계 - 크롤러 실행
+
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      run: python main.py
+
+    # ── Step 2: AI 분석 ───────────────────────────────────────────────
+    - name: 2단계 - AI 분석 실행
+ 
+      env:
+        GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      run: |
+        if ls data/data_*.json 1>/dev/null 2>&1; then
+          python parser.py
+        else
+          echo "⚠️ 수집 데이터 없음 — AI 분석 건너뜀"
+        fi
+
+    # ── Step 3: 결과 커밋 ─────────────────────────────────────────────
+    - name: 3단계 - 결과 저장 및 커밋
+      run: |
+        git config --global user.name "GitHub Action"
+        git config --global user.email "action@github.com"
+        echo "Last Run: $(date)" > last_update.txt
+        git add data/*.json data/*.csv last_update.txt
+        git diff --cached --quiet && echo "변경사항 없음" || git commit -m "🚨 Daily Update: $(date)"
+        git push
