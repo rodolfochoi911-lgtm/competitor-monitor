@@ -55,3 +55,27 @@ jobs:
         git diff --cached --quiet && echo "변경사항 없음" || git commit -m "🚨 Daily Update: $(date)"
         git pull --rebase origin main
         git push
+
+    # ── Step 4: streamlit-deploy 브랜치 경량화 동기화 ──────────────────
+    # main은 원본 전체를 영구 보존(삭제 없음). Streamlit Cloud는 이 가벼운
+    # 브랜치에서 배포해서 무한 부팅(OOM) 문제를 피한다.
+    - name: 4단계 - streamlit-deploy 브랜치 갱신
+      run: |
+        git config --global user.name "GitHub Action"
+        git config --global user.email "action@github.com"
+        git checkout -B streamlit-deploy
+
+        # 원본 크롤링 JSON은 최신 10개만 유지 (앱은 최신 2개만 사용)
+        ls -1t data/data_*.json 2>/dev/null | tail -n +11 | xargs -r rm --
+
+        # notices_history.csv는 최근 180일만 유지 (차트는 30일만 사용)
+        python scripts/trim_history.py
+
+        # Streamlit Cloud 빌드는 크롤러용 무거운 의존성이 필요 없음
+        cp requirements-streamlit.txt requirements.txt
+
+        git add -A
+        git commit -m "🪶 Deploy sync: $(date)" || echo "변경사항 없음"
+        git push -f origin streamlit-deploy
+
+        git checkout main
