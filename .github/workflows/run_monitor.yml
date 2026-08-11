@@ -59,16 +59,23 @@ jobs:
     # ── Step 4: streamlit-deploy 브랜치 경량화 동기화 ──────────────────
     # main은 원본 전체를 영구 보존(삭제 없음). Streamlit Cloud는 이 가벼운
     # 브랜치에서 배포해서 무한 부팅(OOM) 문제를 피한다.
+    #
+    # ※ orphan 브랜치를 쓰는 이유:
+    #   git checkout -B 는 main의 히스토리를 그대로 상속한다.
+    #   main에는 notices_history.csv(약 97MB) 버전이 커밋마다 쌓여 있어서
+    #   클론 시 수 GB 규모의 델타 체인을 복원해야 하고, Streamlit Cloud가
+    #   이 과정에서 타임아웃 → "Cloning repository..." 무한 재시도에 빠진다.
+    #   orphan은 부모 없는 단일 커밋이라 히스토리를 전혀 물려받지 않는다.
     - name: 4단계 - streamlit-deploy 브랜치 갱신
       run: |
         git config --global user.name "GitHub Action"
         git config --global user.email "action@github.com"
-        git checkout -B streamlit-deploy
+        git checkout --orphan deploy-tmp
 
         # 원본 크롤링 JSON은 최신 10개만 유지 (앱은 최신 2개만 사용)
         ls -1t data/data_*.json 2>/dev/null | tail -n +11 | xargs -r rm --
 
-        # notices_history.csv는 최근 180일만 유지 (차트는 30일만 사용)
+        # notices_history.csv는 최근 45일만 유지 (차트는 30일만 사용)
         python scripts/trim_history.py
 
         # Streamlit Cloud 빌드는 크롤러용 무거운 의존성이 필요 없음
@@ -76,6 +83,7 @@ jobs:
 
         git add -A
         git commit -m "🪶 Deploy sync: $(date)" || echo "변경사항 없음"
-        git push -f origin streamlit-deploy
+        git push -f origin deploy-tmp:streamlit-deploy
 
-        git checkout main
+        git checkout -f main
+        git branch -D deploy-tmp
