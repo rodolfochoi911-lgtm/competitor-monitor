@@ -5,15 +5,15 @@ parser.py
   → 이벤트 수집본 저장 (AI 없음), notice 필드는 정제된 순수 텍스트
 
 - 테이블 2: notices_latest.csv / notices_history.csv
-  → 회사별 유의사항 이벤트 단위 중복 제거 → AI 분석
+  → 회사별 유의사항 이벤트 단위 중복 제거해서 수집 (금액 등 AI 추출 없음)
   → 컬럼: company, notice_text, benefit_amt, benefit_type, cond_type, cond_plan_price, summary
+    (benefit_amt 등은 항상 기본값 — 과거 이력과의 컬럼 호환을 위해 유지)
 
 [수정 내역]
 - clean_html_to_text(): HTML 태그/주석 완전 제거 → notice 저장 전 항상 적용
 - FOOTER_NOISE_KEYWORDS + is_footer_noise(): 푸터/네비 노이즈 감지
 - collect_unique_notices(): HTML 제거 → 노이즈 필터 → fingerprint 순서로 수정
 - event_rows 저장 시 notice 필드도 clean_html_to_text() 적용
-- analyze_notice_line(): 재귀 없음, 429 시 즉시 default 반환
 """
 
 import os
@@ -25,20 +25,11 @@ import hashlib
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup, Comment
-from groq import Groq
 from dotenv import load_dotenv
 from datetime import datetime, timezone, timedelta
 
 load_dotenv()
-api_key = os.getenv("GROQ_API_KEY")
 slack_webhook_url = os.getenv("SLACK_WEBHOOK_URL")
-
-if not api_key:
-    print("❌ GROQ_API_KEY가 없습니다.")
-    exit(1)
-
-client = Groq(api_key=api_key)
-MODEL = "llama-3.1-8b-instant"
 
 KST = timezone(timedelta(hours=9))
 
@@ -311,98 +302,11 @@ def collect_unique_notices(items: dict, company: str = "") -> list:
     return result
 
 
-# =========================================================
-# 혜택 키워드 사전 필터 — AI 호출 前 1차 스크리닝
-# =========================================================
-# "원", "할인" 등이 포함된 줄만 AI로 보냄. 나머지는 즉시 NO_BENEFIT 처리.
-# 효과: AI 호출 수 최대 70% 절감, 비용·속도 모두 개선
-BENEFIT_HINT_KEYWORDS = [
-    '원', '할인', '캐시백', '포인트', '쿠폰', '상품권', '적립', '페이백',
-    'GB', 'MB', '데이터', '무료', '증정', '지급', '제공', '혜택',
-    '환급', '리워드', '선물', '경품', '사은품', '바우처', 'pay', 'Pay',
-]
-
-def has_benefit_hint(text: str) -> bool:
-    """단순 키워드 매칭으로 혜택 가능성 사전 판단. 없으면 AI 호출 스킵."""
-    return any(kw in text for kw in BENEFIT_HINT_KEYWORDS)
-
-
-# =========================================================
-# AI 분석 — 배치 처리 (10건씩 묶어서 1회 API 호출)
-# =========================================================
-# 기존: 1건 = 1 API 호출 + sleep(2) → 400건이면 800초(13분)
-# 변경: 10건 = 1 API 호출 + sleep(1) → 40호출이면 40초 (95% 단축)
-
-BATCH_SIZE = 10
-
+# 금액 등 수치 추출 없이 항상 기본값으로 저장 (과거 이력과 컬럼 호환용)
 _NOTICE_DEFAULT = {
     "benefit_amt": 0, "benefit_type": "NO_BENEFIT",
     "cond_type": "ETC", "cond_plan_price": 0, "summary": "",
 }
-
-def analyze_notice_batch(notice_items: list) -> list:
-    """
-    notice_items: [{"notice": str, ...}, ...]  최대 BATCH_SIZE개
-    반환: 각 항목에 대응하는 분석 결과 dict 리스트 (순서 보장)
-    """
-    if not notice_items:
-        return []
-
-    # 입력 구성: 인덱스 붙여서 순서 보장
-    lines_str = "\n".join(
-        f"[{i}] {item['notice'][:300]}"
-        for i, item in enumerate(notice_items)
-    )
-
-    prompt = f"""알뜰폰 이벤트 유의사항 {len(notice_items)}개를 분석해서 JSON 배열로만 답해줘.
-배열 길이는 반드시 {len(notice_items)}개. 인덱스 순서 유지.
-
-각 원소 필드:
-- benefit_amt: 현금성 혜택 금액(숫자). 추첨/경품/단순조건이면 0
-- benefit_type: CASHBACK | VOUCHER(상품권/쿠폰) | POINT | DISCOUNT | NO_BENEFIT
-- cond_type: BASIC(누구나) | FRIEND(친구추천) | CARD(제휴카드) | ETC
-- cond_plan_price: 최소 요금제 금액(없으면 0)
-- summary: 핵심 10자 이내
-
-유의사항 목록:
-{lines_str}
-
-JSON 배열만 출력. 설명 없이."""
-
-    try:
-        resp = client.chat.completions.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=BATCH_SIZE * 80,   # 항목당 약 80토큰
-        )
-        raw = resp.choices[0].message.content.strip()
-        # 코드블럭 제거
-        raw = re.sub(r"^```json|^```|```$", "", raw, flags=re.MULTILINE).strip()
-
-        parsed = json.loads(raw)
-        if not isinstance(parsed, list):
-            parsed = [parsed]
-
-        # 길이 맞추기 (모델이 일부 항목 누락하면 default로 채움)
-        results = []
-        for i in range(len(notice_items)):
-            if i < len(parsed) and isinstance(parsed[i], dict):
-                results.append({**_NOTICE_DEFAULT, **{k: parsed[i][k] for k in _NOTICE_DEFAULT if k in parsed[i]}})
-            else:
-                results.append(dict(_NOTICE_DEFAULT))
-        return results
-
-    except json.JSONDecodeError:
-        return [dict(_NOTICE_DEFAULT) for _ in notice_items]
-    except Exception as e:
-        err = str(e)
-        if "429" in err:
-            print("   ⏳ Rate limit — 15초 대기 후 재시도...")
-            time.sleep(15)
-            return analyze_notice_batch(notice_items)   # 1회 재시도
-        print(f"   ❌ 배치 API 에러: {type(e).__name__}: {err[:80]}")
-        return [dict(_NOTICE_DEFAULT) for _ in notice_items]
 
 
 # =========================================================
@@ -506,6 +410,23 @@ def send_slack_report(total_change: int, event_details: list, notice_changes: di
 # =========================================================
 # CSV 안전 저장
 # =========================================================
+# GitHub는 단일 파일이 100MB를 넘으면 push 자체를 거부한다(GH001).
+# history 파일이 이 한도에 가까워지면 지금까지의 내용은 날짜가 찍힌
+# 파일로 보관(archive)하고, 새 history 파일을 다시 처음부터 쌓는다.
+# → 과거 데이터는 하나도 안 지워지고 그대로 저장소에 남아있음.
+HISTORY_SIZE_LIMIT_BYTES = 90 * 1024 * 1024  # 90MB (100MB 한도에 여유 마진)
+
+
+def _archive_if_too_large(history_path: str):
+    if not os.path.exists(history_path):
+        return
+    if os.path.getsize(history_path) < HISTORY_SIZE_LIMIT_BYTES:
+        return
+    base, ext = os.path.splitext(history_path)
+    archive_path = f"{base}_archive_{datetime.now().strftime('%Y%m%d')}{ext}"
+    os.rename(history_path, archive_path)
+    print(f"📦 {history_path} 가 90MB를 넘어서 {archive_path} 로 보관하고 새로 시작합니다.")
+
 
 def safe_save(df_new: pd.DataFrame, latest_path: str, history_path: str, columns: list):
     for col in columns:
@@ -515,6 +436,8 @@ def safe_save(df_new: pd.DataFrame, latest_path: str, history_path: str, columns
 
     df_new.to_csv(latest_path, index=False, encoding="utf-8-sig")
     print(f"✅ {latest_path} 저장 ({len(df_new)}건)")
+
+    _archive_if_too_large(history_path)
 
     if not os.path.exists(history_path):
         df_new.to_csv(history_path, index=False, encoding="utf-8-sig")
@@ -582,68 +505,25 @@ def run_parser():
     safe_save(df_events, "data/dashboard_latest.csv", "data/dashboard_history.csv", EVENT_COLUMNS)
 
     # ─────────────────────────────────────────────────────
-    # 테이블 2: 유의사항 AI 분석
+    # 테이블 2: 유의사항 수집 (금액 등 AI 추출 없음)
     # ─────────────────────────────────────────────────────
     print("\n" + "=" * 60)
-    print("🔍 테이블 2: 유의사항 AI 분석")
+    print("🔍 테이블 2: 유의사항 수집")
     print("=" * 60)
 
     notice_rows = []
-    NO_BENEFIT_DEFAULT = {
-        "benefit_amt": 0, "benefit_type": "NO_BENEFIT",
-        "cond_type": "ETC", "cond_plan_price": 0, "summary": "",
-    }
 
     for company, items in raw_curr.items():
         unique_notices = collect_unique_notices(items, company=company)
+        print(f"\n🏢 [{company}] 유의사항 {len(unique_notices)}건 수집")
 
-        # 키워드 사전 필터: 혜택 힌트 없는 항목은 AI 호출 없이 즉시 NO_BENEFIT
-        need_ai    = [n for n in unique_notices if has_benefit_hint(n['notice'])]
-        skip_no_ai = [n for n in unique_notices if not has_benefit_hint(n['notice'])]
-
-        print(f"\n🏢 [{company}] 유의사항 {len(unique_notices)}건 "
-              f"→ AI {len(need_ai)}건 / 키워드없음 {len(skip_no_ai)}건 스킵")
-
-        # 키워드 없는 항목: 즉시 NO_BENEFIT 저장
-        for item in skip_no_ai:
+        for item in unique_notices:
             notice_rows.append({"date": timestamp, "company": company,
-                                 "notice_text": item['notice'], **NO_BENEFIT_DEFAULT})
-
-        # 키워드 있는 항목: BATCH_SIZE씩 묶어서 AI 호출
-        total_batches = (len(need_ai) + BATCH_SIZE - 1) // BATCH_SIZE
-        for batch_idx in range(0, len(need_ai), BATCH_SIZE):
-            batch = need_ai[batch_idx: batch_idx + BATCH_SIZE]
-            batch_num = batch_idx // BATCH_SIZE + 1
-
-            results = analyze_notice_batch(batch)
-
-            for item, result in zip(batch, results):
-                notice_rows.append({
-                    "date":            timestamp,
-                    "company":         company,
-                    "notice_text":     item['notice'],
-                    "benefit_amt":     result.get("benefit_amt", 0),
-                    "benefit_type":    result.get("benefit_type", "NO_BENEFIT"),
-                    "cond_type":       result.get("cond_type", "ETC"),
-                    "cond_plan_price": result.get("cond_plan_price", 0),
-                    "summary":         result.get("summary", ""),
-                })
-
-            # 배치당 혜택 있는 항목 요약 출력
-            hits = [(item, r) for item, r in zip(batch, results) if r.get("benefit_amt", 0) > 0]
-            print(f"   배치 {batch_num}/{total_batches} 완료 | 혜택 발견: {len(hits)}건"
-                  + (f" → {hits[0][1]['benefit_amt']:,}원 {hits[0][1]['benefit_type']}" if hits else ""))
-
-            time.sleep(1)   # 배치당 1초 (기존 항목당 2초 → 10배 빠름)
+                                 "notice_text": item['notice'], **_NOTICE_DEFAULT})
 
     if notice_rows:
         df_notices = pd.DataFrame(notice_rows)
-        has_benefit = df_notices[df_notices['benefit_amt'] > 0]
-        print(f"\n📊 분석 결과: 총 {len(df_notices)}건 → 혜택 있음 {len(has_benefit)}건")
-        if not has_benefit.empty:
-            print("\n💰 추출된 혜택 목록:")
-            for _, row in has_benefit.sort_values('benefit_amt', ascending=False).iterrows():
-                print(f"   {row['company']} | {int(row['benefit_amt']):,}원 | {row['benefit_type']} | {row['notice_text'][:50]}")
+        print(f"\n📊 총 {len(df_notices)}건 수집")
         safe_save(df_notices, "data/notices_latest.csv", "data/notices_history.csv", NOTICE_COLUMNS)
     else:
         print("⚠️ 저장할 유의사항 데이터 없음")
