@@ -8,22 +8,32 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: monitoring-data
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
 
     steps:
     - name: 저장소 체크아웃
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: 파이썬 설정
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.9'
 
     - name: 라이브러리 설치
       run: pip install -r requirements.txt
+
+    - name: 예정 및 실제 실행 시각 기록
+      env:
+        SCHEDULE_CRON: ${{ github.event.schedule }}
+      run: python scripts/run_timing.py
 
     # ── Step 1: 크롤러 ────────────────────────────────────────────────
     - name: 1단계 - 크롤러 실행
@@ -89,3 +99,4 @@ jobs:
 
         git checkout -f main
         git branch -D deploy-tmp
+

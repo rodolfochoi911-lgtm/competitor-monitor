@@ -1,3 +1,4 @@
+from monitor_core import detect_changes, calculate_notice_diff
 import streamlit as st
 import glob
 import os
@@ -61,81 +62,6 @@ def extract_benefit_amount(title):
 # =========================================================
 # 이벤트 변경 감지 — 제목 + 이미지 + 본문 (유의사항은 별도 아키텍처)
 # =========================================================
-def detect_changes(old, new):
-    changes = {}
-    for field in ['title', 'img']:
-        old_val = old.get(field, '') or ''
-        new_val = new.get(field, '') or ''
-        if old_val != new_val:
-            changes[field] = {'old': old_val, 'new': new_val}
-    return changes
-
-
-# =========================================================
-# 유의사항 변경 감지 — 회사별 줄 단위 집합 비교 (이벤트 감지와 독립)
-# =========================================================
-FOOTER_NOISE_KEYWORDS_P2 = [
-    '이용약관', '개인정보 처리방침', '개인정보처리방침',
-    '이메일 무단 수집거부', '분쟁처리절차', '프라이버시 센터',
-    '유심구매하기', '다이렉트몰 구매하기', '오픈마켓 구매하기',
-    '편의점/마트 구매하기', '요금제 소개', '요금제 비교',
-    '전체 부가서비스', '로그인', '회원가입', '마이페이지',
-    '없다면?', '있다면?', 'eSIM', '워치',
-]
-
-def _is_footer_noise(text: str) -> bool:
-    return sum(1 for kw in FOOTER_NOISE_KEYWORDS_P2 if kw in text) >= 3
-
-def _clean_html(text: str) -> str:
-    if not text:
-        return ''
-    if '<' in text and '>' in text:
-        from bs4 import BeautifulSoup
-        text = BeautifulSoup(text, 'html.parser').get_text(separator='\n', strip=True)
-    text = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
-    return re.sub(r'\n{3,}', '\n\n', text).strip()
-
-def get_notice_lines(data: dict, company: str) -> set:
-    """
-    회사의 모든 이벤트 notice를 수집 → HTML 정제 → 줄 단위 집합 반환.
-    스카이라이프는 푸터 노이즈 필터 미적용.
-    """
-    skip_footer = (company == "스카이라이프")
-    lines = set()
-    for info in data.get(company, {}).values():
-        raw = (info.get('notice', '') or '').strip()
-        if not raw:
-            continue
-        cleaned = _clean_html(raw)
-        if not cleaned:
-            continue
-        if not skip_footer and _is_footer_noise(cleaned):
-            continue
-        for line in cleaned.split('\n'):
-            line = line.strip()
-            if line and len(line) >= 10:
-                lines.add(line)
-    return lines
-
-def calculate_notice_diff(data_curr: dict, data_prev: dict) -> dict:
-    """
-    회사별 유의사항 줄 단위 변경.
-    반환: {company: {"added": [...], "removed": [...], "total": int}}
-    """
-    result = {}
-    for company in set(data_curr.keys()) | set(data_prev.keys()):
-        curr = get_notice_lines(data_curr, company)
-        prev = get_notice_lines(data_prev, company)
-        added   = sorted(curr - prev)
-        removed = sorted(prev - curr)
-        if added or removed:
-            result[company] = {
-                "added":   added,
-                "removed": removed,
-                "total":   len(added) + len(removed),
-            }
-    return result
-
 # =========================================================
 # Diff HTML
 # =========================================================
@@ -235,7 +161,7 @@ if not data_today or not data_yesterday:
 # =========================================================
 # 이벤트 변경 데이터 수집
 # =========================================================
-all_companies = sorted(data_today.keys())
+all_companies = sorted(set(data_today) | set(data_yesterday))
 company_data = {}
 
 for company in all_companies:
@@ -318,6 +244,7 @@ def prepare_export_data(company_data):
             types = []
             if 'title' in chg: types.append("제목")
             if 'img' in chg: types.append("썸네일")
+            if 'main_content' in chg: types.append("본문")
             rows.append({"통신사": company, "상태": "⚡ 변경", "제목": item.get('title', ''),
                          "URL": item.get('url', ''), "혜택금액": extract_benefit_amount(item.get('title', '')),
                          "변경내용": ", ".join(types) or "-"})
@@ -356,8 +283,7 @@ for company in target_companies:
         list_end = [x for x in list_end if q in x.get('title', '').lower()]
 
     if show_only_changes:
-        list_new = []
-        list_end = []
+        pass  # 신규와 종료도 변경사항에 포함한다.
 
     if not list_new and not list_mod and not list_end and not notice_diff.get(company):
         continue
@@ -399,6 +325,7 @@ for company in target_companies:
             badges = []
             if 'title' in chg: badges.append("🏷️ 제목")
             if 'img' in chg: badges.append("🖼️ 썸네일")
+            if 'main_content' in chg: badges.append("📝 본문")
 
             with st.expander(f"**{item.get('title', '')}** ({', '.join(badges) or '변경'})"):
                 st.caption(f"🔗 [페이지 링크]({item.get('url', '#')})")
@@ -406,6 +333,12 @@ for company in target_companies:
                 if 'title' in chg:
                     st.markdown("**🏷️ 제목 변경**")
                     diff = generate_diff_html(chg['title']['old'], chg['title']['new'])
+                    if diff:
+                        st.markdown(diff, unsafe_allow_html=True)
+
+                if 'main_content' in chg:
+                    st.markdown("**📝 본문 변경**")
+                    diff = generate_diff_html(chg['main_content']['old'], chg['main_content']['new'])
                     if diff:
                         st.markdown(diff, unsafe_allow_html=True)
 
@@ -453,9 +386,10 @@ for company in target_companies:
 
 # 변경사항 없는 경우
 if st.session_state.selected_company == "전체":
-    if all(len(d['new']) + len(d['modified']) + len(d['ended']) == 0 for d in company_data.values()):
+    if not notice_diff and all(len(d['new']) + len(d['modified']) + len(d['ended']) == 0 for d in company_data.values()):
         st.success("🎉 선택한 기간 동안 모든 통신사에서 이벤트 변경사항이 없습니다!")
 else:
     sd = company_data.get(st.session_state.selected_company, {})
-    if not sd.get('new') and not sd.get('modified') and not sd.get('ended'):
+    if not sd.get('new') and not sd.get('modified') and not sd.get('ended') and not notice_diff.get(st.session_state.selected_company):
         st.info(f"🎉 **{st.session_state.selected_company}**에서 이벤트 변경사항이 없습니다.")
+

@@ -17,6 +17,7 @@ parser.py
 """
 
 import os
+from monitor_core import detect_changes, calculate_notice_diff, validate_snapshot
 import json
 import time
 import glob
@@ -38,7 +39,7 @@ EVENT_COLUMNS = [
 ]
 
 NOTICE_COLUMNS = [
-    "date", "company", "notice_text",
+    "date", "company", "notice_text", "url", "title",
     "benefit_amt", "benefit_type", "cond_type", "cond_plan_price", "summary",
 ]
 
@@ -132,21 +133,8 @@ def text_fingerprint(text: str) -> str:
 
 
 def normalize_for_dedup(text: str) -> str:
-    """
-    중복 감지용: 날짜·숫자·금액 등 이벤트마다 달라지는 부분을 마스킹.
-    예) '사은품 지급일 : 25년 1월 22일경 지급'
-      → '사은품 지급일 : DATE경 지급'
-    → 날짜만 다른 동일 패턴 항목이 중복으로 잡힘
-    """
-    t = text
-    # 연월일 패턴
-    t = re.sub(r'\d{2,4}[년./-]\s*\d{1,2}[월./-]\s*\d{1,2}일?', 'DATE', t)
-    t = re.sub(r'\d{1,2}월\s*\d{1,2}일', 'DATE', t)
-    # 금액/수량 (N원, NGB, N개월, N회, N명 등)
-    t = re.sub(r'\d[\d,]*\s*(?:원|GB|MB|개월|일간|회|명|건|개)', 'N', t)
-    # 나머지 숫자
-    t = re.sub(r'\d+', 'N', t)
-    return re.sub(r'\s+', ' ', t).strip()
+    """Whitespace only: amounts, dates and quantities are material conditions."""
+    return re.sub(r'\s+', ' ', text).strip()
 
 
 # ── 푸터 줄: 줄 단위 제거 (블록 전체 날리지 않음) ──────────────────────
@@ -221,8 +209,6 @@ def split_into_notice_items(text: str) -> list:
             continue
         if is_section_header(line):
             continue
-        if is_timestamp_line(line):
-            continue
 
         if SUB_ITEM_RE.match(line):
             # 하위 항목 → 이전 항목에 붙이기
@@ -260,7 +246,7 @@ def collect_unique_notices(items: dict, company: str = "") -> list:
     1. 회사의 모든 이벤트 notice를 전부 합침
     2. 항목 단위로 쪼갬 (하위 항목 병합, 섹션 헤더 제거)
     3. 푸터 줄 제거
-    4. 날짜/숫자 마스킹 기반 중복 제거 → 같은 패턴의 숫자만 다른 변형 제거
+    4. 이벤트 URL별 원문 중복 제거 → 같은 패턴의 숫자만 다른 변형 제거
     5. 유니크 항목 목록 반환
     """
     all_items = []
@@ -276,15 +262,15 @@ def collect_unique_notices(items: dict, company: str = "") -> list:
         for item_text in split_into_notice_items(cleaned):
             all_items.append({"line": item_text, "url": url, "title": info.get('title', '')})
 
-    # 숫자/날짜 마스킹 기반 중복 제거
+    # 이벤트 URL별 원문 중복 제거
     seen_normalized = set()
     seen_exact      = set()
     result = []
     skipped_dup = 0
 
     for item in all_items:
-        exact_fp = text_fingerprint(item["line"])
-        norm_fp  = text_fingerprint(normalize_for_dedup(item["line"]))
+        exact_fp = (item["url"], normalize_for_dedup(item["line"]))
+        norm_fp = exact_fp
 
         if exact_fp in seen_exact or norm_fp in seen_normalized:
             skipped_dup += 1
@@ -324,8 +310,7 @@ def calculate_changes(current_data: dict, prev_data: dict) -> tuple:
         end_cnt = len(prev_urls - curr_urls)
         mod_cnt = sum(
             1 for url in curr_urls & prev_urls
-            if curr[url].get('title') != prev[url].get('title')
-            or curr[url].get('img') != prev[url].get('img')
+            if detect_changes(prev[url], curr[url])
         )
         total = new_cnt + end_cnt + mod_cnt
         if total > 0:
@@ -363,20 +348,7 @@ def _get_notice_lines(data: dict, company: str) -> set:
 
 
 def calculate_notice_changes(curr_data: dict, prev_data: dict) -> dict:
-    """
-    회사별 유의사항 줄 단위 변경 감지.
-    반환: {company: {"added": [문장, ...], "removed": [문장, ...]}}
-    이벤트 변경 감지(calculate_changes)와 완전히 독립된 아키텍처.
-    """
-    result = {}
-    for company in set(curr_data.keys()) | set(prev_data.keys()):
-        curr_lines = _get_notice_lines(curr_data, company)
-        prev_lines = _get_notice_lines(prev_data, company)
-        added   = sorted(curr_lines - prev_lines)
-        removed = sorted(prev_lines - curr_lines)
-        if added or removed:
-            result[company] = {"added": added, "removed": removed}
-    return result
+    return calculate_notice_diff(curr_data, prev_data)
 
 
 # =========================================================
@@ -394,17 +366,26 @@ def send_slack_report(total_change: int, event_details: list, notice_changes: di
         "https://share.streamlit.io/rodolfochoi911-lgtm/competitor-monitor/main/Home.py"
     )
 
-    if total_change == 0:
+    if total_change == 0 and not notice_changes:
         msg = f"[{now_str}] 경쟁사 동향 보고\n\n특이사항 없음\n\n대시보드: {dashboard_url}"
     else:
         body = "\n".join(event_details) if event_details else "이벤트 변동 없음"
-        msg = f"[{now_str}] 경쟁사 동향 보고\n\n총 {total_change}건 변동\n{body}\n\n대시보드: {dashboard_url}"
+        notice_count = sum(len(v['added']) + len(v['removed']) for v in notice_changes.values())
+        msg = f"[{now_str}] 경쟁사 동향 보고\n\n이벤트 {total_change}건 / 유의사항 {notice_count}줄 변동\n{body}\n\n대시보드: {dashboard_url}"
 
+    if notice_changes:
+        msg += "\n\n유의사항 변경"
+        for company, changes in sorted(notice_changes.items()):
+            msg += f"\n• {company}: 추가 {len(changes['added'])}줄 / 삭제 {len(changes['removed'])}줄"
+            for label, key in [('추가', 'added'), ('삭제', 'removed')]:
+                for line in changes[key][:2]:
+                    msg += f"\n  {label}: {line[:240]}"
     try:
         r = requests.post(slack_webhook_url, json={"text": msg}, timeout=10)
-        print("✅ Slack 발송 완료!" if r.status_code == 200 else f"⚠️ Slack {r.status_code}")
+        r.raise_for_status()
+        print("✅ Slack 발송 완료!")
     except Exception as e:
-        print(f"❌ Slack 실패: {e}")
+        raise RuntimeError("Slack 알림 전송 실패") from e
 
 
 # =========================================================
@@ -450,7 +431,7 @@ def safe_save(df_new: pd.DataFrame, latest_path: str, history_path: str, columns
             df_existing[col] = ""
     df_existing = df_existing[columns]
 
-    df_merged = pd.concat([df_existing, df_new], ignore_index=True)
+    df_merged = pd.concat([df_existing, df_new], ignore_index=True).drop_duplicates()
     df_merged.to_csv(history_path, index=False, encoding="utf-8-sig")
     print(f"✅ {history_path} 누적 ({len(df_merged)}건 총)")
 
@@ -473,6 +454,7 @@ def run_parser():
         with open(json_files[1], 'r', encoding='utf-8') as f:
             raw_prev = json.load(f)
 
+    validate_snapshot(raw_curr, raw_prev)
     print(f"📂 최신: {file_curr}")
     m = re.search(r'data_(\d{8})_(\d{6})\.json', file_curr)
     timestamp = (
@@ -498,7 +480,6 @@ def run_parser():
                 "url":          url,
                 "image":        info.get('img', ''),
                 "category":     classify_category(info.get('title', '')),
-                "main_content": clean_html_to_text(info.get('main_content', '') or ''),
             })
 
     df_events = pd.DataFrame(event_rows)
@@ -519,14 +500,16 @@ def run_parser():
 
         for item in unique_notices:
             notice_rows.append({"date": timestamp, "company": company,
-                                 "notice_text": item['notice'], **_NOTICE_DEFAULT})
+                                 "notice_text": item['notice'], "url": item["url"],
+                                 "title": item["title"], **_NOTICE_DEFAULT})
 
     if notice_rows:
         df_notices = pd.DataFrame(notice_rows)
         print(f"\n📊 총 {len(df_notices)}건 수집")
         safe_save(df_notices, "data/notices_latest.csv", "data/notices_history.csv", NOTICE_COLUMNS)
     else:
-        print("⚠️ 저장할 유의사항 데이터 없음")
+        safe_save(pd.DataFrame(columns=NOTICE_COLUMNS), "data/notices_latest.csv",
+                  "data/notices_history.csv", NOTICE_COLUMNS)
 
     # 이벤트 변경 + 유의사항 변경 분리 감지 → Slack
     total_chg, _, event_details = calculate_changes(raw_curr, raw_prev)
@@ -536,3 +519,4 @@ def run_parser():
 
 if __name__ == "__main__":
     run_parser()
+

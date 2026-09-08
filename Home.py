@@ -1,11 +1,6 @@
-"""
-Home.py — 메인 대시보드
-[변경]
-- dashboard_latest.csv: 이벤트 수집본 (benefit_amt 없음)
-- notices_latest.csv: 유의사항 분석 결과 (혜택 정보)
-- 차트는 notices 기반, 카드는 이벤트 기반
-"""
+"""프로모션 목록과 본문·유의사항 변경을 확인하는 대시보드."""
 
+from monitor_core import detect_changes, calculate_notice_diff
 import streamlit as st
 import pandas as pd
 import altair as alt
@@ -34,29 +29,6 @@ def load_events(mtime: float) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=60)
-def load_notices(mtime: float) -> pd.DataFrame:
-    path = "data/notices_latest.csv"
-    if not os.path.exists(path):
-        return pd.DataFrame()
-    df = pd.read_csv(path)
-    df['date']          = pd.to_datetime(df['date'], errors='coerce')
-    df['benefit_amt']   = pd.to_numeric(df['benefit_amt'], errors='coerce').fillna(0)
-    df['cond_plan_price'] = pd.to_numeric(df['cond_plan_price'], errors='coerce').fillna(0)
-    return df
-
-
-@st.cache_data(ttl=60)
-def load_notices_history(mtime: float) -> pd.DataFrame:
-    path = "data/notices_history.csv"
-    if not os.path.exists(path):
-        return pd.DataFrame()
-    df = pd.read_csv(path)
-    df['date']        = pd.to_datetime(df['date'], errors='coerce')
-    df['benefit_amt'] = pd.to_numeric(df['benefit_amt'], errors='coerce').fillna(0)
-    return df
-
-
-@st.cache_data(ttl=60)
 def calculate_changes(json_mtime: float) -> dict:
     json_files = sorted(glob.glob("data/data_*.json"), reverse=True)
     if len(json_files) < 2:
@@ -66,6 +38,7 @@ def calculate_changes(json_mtime: float) -> dict:
     with open(json_files[1], 'r', encoding='utf-8') as f:
         prev = json.load(f)
     changes = {}
+    notices = calculate_notice_diff(curr, prev)
     for company in set(curr) | set(prev):
         c_urls = set(curr.get(company, {}).keys())
         p_urls = set(prev.get(company, {}).keys())
@@ -74,32 +47,20 @@ def calculate_changes(json_mtime: float) -> dict:
         # 이벤트 변경 감지: 제목 + 이미지
         mod = sum(
             1 for url in c_urls & p_urls
-            if curr[company][url].get('title') != prev[company][url].get('title')
-            or curr[company][url].get('img') != prev[company][url].get('img')
+            if detect_changes(prev[company][url], curr[company][url])
         )
-        total = new + end + mod
+        notice_count = notices.get(company, {}).get('total', 0)
+        total = new + end + mod + notice_count
         if total > 0:
-            changes[company] = {'new': new, 'end': end, 'mod': mod, 'total': total}
+            changes[company] = {'new': new, 'end': end, 'mod': mod, 'notice': notice_count, 'total': total}
     return changes
 
 
 # ── 데이터 로드 ───────────────────────────────────────────
 df_events  = load_events(get_mtime("data/dashboard_latest.csv"))
-df_notices = load_notices(get_mtime("data/notices_latest.csv"))
-df_notices_hist = load_notices_history(get_mtime("data/notices_history.csv"))
 
 json_files = sorted(glob.glob("data/data_*.json"), reverse=True)
 changes = calculate_changes(get_mtime(json_files[0]) if json_files else 0)
-
-# 통신사별 최대 혜택 (notices 기반, 카드에서 뱃지용)
-company_max_benefit = {}
-if not df_notices.empty:
-    company_max_benefit = (
-        df_notices[df_notices['benefit_amt'] > 0]
-        .groupby('company')['benefit_amt']
-        .max()
-        .to_dict()
-    )
 
 # ── 헤더 ─────────────────────────────────────────────────
 col_title, col_refresh = st.columns([6, 1])
@@ -109,8 +70,6 @@ with col_refresh:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🔄 새로고침", type="secondary", use_container_width=True):
         load_events.clear()
-        load_notices.clear()
-        load_notices_history.clear()
         calculate_changes.clear()
         st.rerun()
 
@@ -124,7 +83,7 @@ if df_events.empty:
 
 # ── 1. 통신사별 변동 현황 ─────────────────────────────────
 st.subheader("📊 통신사별 변동 현황")
-st.caption("전일 대비 이벤트 변동 내역 (신규/종료/수정)")
+st.caption("직전 수집 대비 변동 내역 (신규/종료/본문 수정/유의사항)")
 
 all_companies = sorted(df_events['company'].unique())
 company_list = sorted(
@@ -141,6 +100,7 @@ for i in range(0, len(company_list), 3):
                 if cd['new']: parts.append(f"신규 {cd['new']}")
                 if cd['end']: parts.append(f"종료 {cd['end']}")
                 if cd['mod']: parts.append(f"수정 {cd['mod']}")
+                if cd.get('notice'): parts.append(f"유의사항 {cd['notice']}줄")
                 summary_text = " | ".join(parts)
                 border_color = "#1f77b4"
                 status_text  = f"{cd['total']}건 변동"
@@ -163,61 +123,6 @@ for i in range(0, len(company_list), 3):
                     st.switch_page("pages/2_🚨_프로모션 변경 리포트.py")
 
 st.caption("💡 상세 변동 내역은 **🚨프로모션 변경 리포트** 페이지를 이용하세요")
-st.divider()
-
-# ── 2. 혜택 차트 (notices 기반) ───────────────────────────
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("통신사별 최대 혜택 금액")
-    st.caption("유의사항 분석 기반 — 통신사별 단일 최대 혜택")
-    if not df_notices.empty and df_notices['benefit_amt'].max() > 0:
-        df_max = (
-            df_notices[df_notices['benefit_amt'] > 0]
-            .groupby('company')['benefit_amt']
-            .max()
-            .reset_index()
-            .sort_values('benefit_amt', ascending=False)
-        )
-        chart = alt.Chart(df_max).mark_bar().encode(
-            x=alt.X('company:N', title='통신사', sort='-y'),
-            y=alt.Y('benefit_amt:Q', title='최대 혜택 (원)', axis=alt.Axis(format='~s')),
-            color=alt.Color('company:N', legend=None, scale=alt.Scale(scheme='category10')),
-            tooltip=[
-                alt.Tooltip('company:N', title='통신사'),
-                alt.Tooltip('benefit_amt:Q', title='혜택 금액', format=',')
-            ]
-        ).properties(height=320)
-        st.altair_chart(chart, use_container_width=True)
-    else:
-        st.info("📊 유의사항 분석 데이터가 없습니다.")
-
-with col2:
-    st.subheader("혜택 금액 추이 (최근 30일)")
-    st.caption("통신사별 최대 혜택 변화")
-    if not df_notices_hist.empty and df_notices_hist['date'].nunique() > 1:
-        cutoff = pd.Timestamp.now() - timedelta(days=30)
-        df_trend = (
-            df_notices_hist[df_notices_hist['date'] >= cutoff]
-            .groupby([df_notices_hist['date'].dt.date, 'company'])['benefit_amt']
-            .max()
-            .reset_index()
-        )
-        df_trend.columns = ['date', 'company', 'benefit_amt']
-        chart_line = alt.Chart(df_trend).mark_line(point=True).encode(
-            x=alt.X('date:T', title='날짜'),
-            y=alt.Y('benefit_amt:Q', title='최대 혜택 (원)', axis=alt.Axis(format='~s')),
-            color=alt.Color('company:N', title='통신사'),
-            tooltip=[
-                alt.Tooltip('date:T', title='날짜', format='%Y-%m-%d'),
-                alt.Tooltip('company:N', title='통신사'),
-                alt.Tooltip('benefit_amt:Q', title='혜택 금액', format=',')
-            ]
-        ).properties(height=320)
-        st.altair_chart(chart_line, use_container_width=True)
-    else:
-        st.info("📊 2회차 수집 이후 추이 차트가 표시됩니다.")
-
 st.divider()
 
 # ── 3. 통신사별 이벤트 카드 ──────────────────────────────
@@ -254,7 +159,6 @@ def show_card(row, show_company: bool = False):
     thumb    = str(row.image) if str(row.image) not in ('', 'nan') else ''
     category = str(row.category) if str(row.category) not in ('', 'nan') else '기타'
     badge_color = CATEGORY_COLORS.get(category, "#95a5a6")
-    max_benefit = company_max_benefit.get(row.company, 0)
 
     with st.container():
         if thumb.startswith('http'):
@@ -279,20 +183,6 @@ def show_card(row, show_company: bool = False):
             f'<strong style="font-size:13px;line-height:1.3;">{title_short}</strong></div>',
             unsafe_allow_html=True
         )
-        if max_benefit > 0:
-            st.markdown(
-                f'<div style="background:#e74c3c;color:white;padding:8px;border-radius:6px;'
-                f'text-align:center;margin:8px 0;">'
-                f'<div style="font-size:9px;opacity:0.9;">통신사 최대 혜택</div>'
-                f'<div style="font-size:16px;font-weight:bold;">{int(max_benefit):,}원</div></div>',
-                unsafe_allow_html=True
-            )
-        else:
-            st.markdown(
-                '<div style="background:#95a5a6;color:white;padding:8px;border-radius:6px;'
-                'text-align:center;margin:8px 0;"><div style="font-size:11px;">혜택 정보 없음</div></div>',
-                unsafe_allow_html=True
-            )
         st.link_button("🔗 바로가기", row.url, use_container_width=True, type="primary")
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -315,3 +205,4 @@ else:
 
 st.divider()
 st.caption("💡 상세 변동 내역은 **🚨프로모션 변경 리포트**를, 과거 이력은 **🗄️이벤트 히스토리 DB**를 이용하세요")
+

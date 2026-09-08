@@ -429,4 +429,5 @@ def extract_page_content(driver, url: str) -> dict:
 
     except Exception as e:
         print(f"   ⚠️ 콘텐츠 추출 실패 [{url[:50]}]: {e}")
-        return empty
+        raise RuntimeError(f"콘텐츠 추출 실패: {url}") from e
+

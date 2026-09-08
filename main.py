@@ -4,6 +4,8 @@
 """
 
 import os
+import glob
+from monitor_core import validate_snapshot
 import json
 import time
 import re
@@ -206,7 +208,7 @@ def extract_list_with_thumbnails(
             targets[final_url] = {'thumb': thumb, 'list_title': list_title_text}
 
     except Exception as e:
-        print(f"   ⚠️ 목록 수집 에러 [{site_name}]: {e}")
+        raise RuntimeError(f"목록 수집 실패 [{site_name}]") from e
 
     if skipped_no_thumb > 0:
         print(f"   💡 썸네일 없는 글 {skipped_no_thumb}건 제외")
@@ -281,8 +283,7 @@ def visit_detail_pages(driver, targets: dict, site_name: str) -> dict:
             print(f"   ✓ [{site_name}] {title[:30]} | 본문 {len(content_data['main_content'])}자 | 유의사항 {len(content_data['notice'])}자")
 
         except Exception as e:
-            print(f"   ⚠️ 상세 수집 실패: {url[:60]} | {e}")
-            continue
+            raise RuntimeError(f"상세 수집 실패: {url}") from e
 
     return final_data
 
@@ -374,8 +375,7 @@ def crawl_skylife(driver) -> dict:
             driver.get(url)
             time.sleep(2)
         except Exception as e:
-            print(f"   ⚠️ 페이지 로드 실패 (p{page}): {e}")
-            break
+            raise RuntimeError(f"스카이라이프 목록 로드 실패 p{page}") from e
 
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         page_links = []
@@ -444,8 +444,7 @@ def crawl_skylife(driver) -> dict:
                 print(f"   ✓ [스카이라이프] {title[:30]} | 본문 {len(main_content)}자 | 유의사항 {len(notice)}자")
 
             except Exception as e:
-                print(f"   ⚠️ 상세 실패 ({detail_url[-40:]}): {e}")
-                continue
+                raise RuntimeError(f"스카이라이프 상세 수집 실패: {detail_url}") from e
 
     return result
 
@@ -479,8 +478,7 @@ def crawl_site_logic(driver, comp: dict) -> dict:
         try:
             driver.get(t_url)
         except Exception as e:
-            print(f"   ⚠️ 페이지 로드 실패 [{comp['name']} p{page}]: {e}")
-            break
+            raise RuntimeError(f"목록 페이지 로드 실패: {comp['name']} p{page}") from e
 
         page_targets = extract_list_with_thumbnails(
             driver, comp['name'],
@@ -551,6 +549,15 @@ def main():
             except Exception:
                 pass
 
+    previous_files = sorted(glob.glob(os.path.join(DATA_DIR, 'data_*.json')))
+    previous = {}
+    if previous_files:
+        with open(previous_files[-1], encoding='utf-8') as f:
+            previous = json.load(f)
+    expected = {comp['name'] for comp in competitors}
+    if set(results) != expected:
+        raise RuntimeError('일부 회사 수집 실패: 이전 정상 데이터를 유지합니다.')
+    validate_snapshot(results, previous)
     output_path = os.path.join(DATA_DIR, f"data_{FILE_TIMESTAMP}.json")
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
@@ -566,3 +573,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
