@@ -1,4 +1,4 @@
-from monitor_core import detect_changes, calculate_notice_diff
+from monitor_core import detect_changes, calculate_notice_diff, collection_warnings
 import streamlit as st
 import glob
 import os
@@ -154,6 +154,9 @@ if date1_info.get('datetime') and date2_info.get('datetime'):
         st.info("💡 같은 날짜(오전/오후) 비교입니다.")
 
 data_today, data_yesterday = load_data_by_file(date1_info['file'], date2_info['file'])
+if data_today:
+    for warning in collection_warnings(data_today):
+        st.warning(warning)
 if not data_today or not data_yesterday:
     st.error("❌ 데이터를 불러올 수 없습니다.")
     st.stop()

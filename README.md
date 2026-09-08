@@ -24,3 +24,13 @@ https://docs.github.com/en/actions/how-tos/troubleshoot-workflows
 회귀 테스트는 외부 크롤링/알림 없이 `python -m unittest discover -s tests -v`로 실행합니다.
 
 혜택 시뮬레이터와 미산출 금액 차트는 제거했습니다. 본문·유의사항은 이벤트별로 비교하며 숫자·날짜 조건과 원문 URL을 보존합니다.
+
+## 일부 텍스트를 읽지 못한 경우
+
+회사 전체 수집 실패와 개별 본문/유의사항의 빈 추출은 구분합니다. 개별 필드가
+일시적으로 비면 그 필드의 이전 값을 보존하고 JSON의 `_retained_fields`에 원래
+스냅샷 이름을 기록합니다. 화면과 알림에 재확인 필요를 표시하며 다른 정상 결과는
+갱신합니다. 다시 읽히면 이전 값 보존 표시를 해제합니다.
+
+`Verify reported extraction failure`는 실제 오류 URL을 읽어 임시 폴더에서 파싱까지
+검증합니다. 알림 전송이나 운영 데이터 커밋은 하지 않습니다.

@@ -5,7 +5,7 @@
 
 import os
 import glob
-from monitor_core import validate_snapshot
+from monitor_core import validate_snapshot, preserve_unavailable_fields
 import json
 import time
 import re
@@ -558,6 +558,9 @@ def main():
     if set(results) != expected:
         raise RuntimeError('일부 회사 수집 실패: 이전 정상 데이터를 유지합니다.')
     validate_snapshot(results, previous)
+    warnings = preserve_unavailable_fields(results, previous, os.path.basename(previous_files[-1]) if previous_files else '')
+    for warning in warnings:
+        print(f'⚠️ {warning}')
     output_path = os.path.join(DATA_DIR, f"data_{FILE_TIMESTAMP}.json")
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)

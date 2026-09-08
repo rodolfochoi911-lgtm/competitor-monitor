@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch, Mock
 
 import parser
-from monitor_core import detect_changes, calculate_notice_diff, validate_snapshot
+from monitor_core import detect_changes, calculate_notice_diff, validate_snapshot, preserve_unavailable_fields, collection_warnings
 from scripts.run_timing import timing_report
 from datetime import datetime, timezone
 
@@ -52,9 +52,41 @@ class PromotionRegressionTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             validate_snapshot({'A': {'u': {}}}, {'A': {'u': {}}, 'B': {'u': {}}})
 
-    def test_lost_notice_is_rejected(self):
-        with self.assertRaises(RuntimeError):
-            validate_snapshot({'A': {'u': {'notice': ''}}}, {'A': {'u': {'notice': '지급 조건'}}})
+    def test_lost_notice_is_preserved_and_flagged(self):
+        current = {'A': {'u': {'notice': ''}}}
+        warnings = preserve_unavailable_fields(current, {'A': {'u': {'notice': '지급 조건'}}}, 'old.json')
+        self.assertEqual('지급 조건', current['A']['u']['notice'])
+        self.assertEqual({'notice': 'old.json'}, current['A']['u']['_retained_fields'])
+        self.assertEqual(1, len(warnings))
+
+    def test_reported_skt_empty_body_does_not_abort_or_fake_a_change(self):
+        url = 'https://shop.tworld.co.kr/nf/index_nf_yp_plan.html?exhibitionId=P00000326'
+        old = {'SKT 다이렉트': {url: {'title': '요금제', 'main_content': '이전 본문', 'notice': '기존 조건'}}}
+        current = {'SKT 다이렉트': {url: {'title': '요금제', 'main_content': '', 'notice': '새 조건'}}}
+        preserve_unavailable_fields(current, old, 'old.json')
+        self.assertEqual('이전 본문', current['SKT 다이렉트'][url]['main_content'])
+        self.assertEqual('새 조건', current['SKT 다이렉트'][url]['notice'])
+        self.assertEqual({}, detect_changes(old['SKT 다이렉트'][url], current['SKT 다이렉트'][url]))
+        self.assertTrue(calculate_notice_diff(current, old))
+
+    def test_repeated_failure_keeps_original_provenance(self):
+        previous = {'A': {'u': {'main_content': 'old', '_retained_fields': {'main_content': 'first.json'}}}}
+        current = {'A': {'u': {'main_content': ''}}}
+        preserve_unavailable_fields(current, previous, 'second.json')
+        self.assertEqual('first.json', current['A']['u']['_retained_fields']['main_content'])
+
+    def test_recovery_clears_warning(self):
+        previous = {'A': {'u': {'main_content': 'old', '_retained_fields': {'main_content': 'first.json'}}}}
+        current = {'A': {'u': {'main_content': 'new'}}}
+        self.assertEqual([], preserve_unavailable_fields(current, previous, 'second.json'))
+        self.assertEqual('new', current['A']['u']['main_content'])
+
+    def test_warning_notification_does_not_claim_no_change(self):
+        with patch.object(parser, 'slack_webhook_url', 'https://example.invalid'), patch.object(parser.requests, 'post') as post:
+            parser.send_slack_report(0, [], {}, ['본문 이전 값 보존'])
+            text = post.call_args.kwargs['json']['text']
+            self.assertNotIn('특이사항 없음', text)
+            self.assertIn('수집 확인 필요', text)
 
     def test_failed_crawl_does_not_write_snapshot(self):
         import main
@@ -62,6 +94,21 @@ class PromotionRegressionTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 main.main()
             self.assertEqual([], list(Path(temp).glob('data_*.json')))
+
+    def test_complete_run_saves_other_companies_when_one_body_is_empty(self):
+        import main
+        companies = ['SKT 다이렉트', 'KTM 모바일', 'U+ 유모바일', '스카이라이프', '헬로모바일', 'SK 7세븐모바일']
+        previous = {name: {'u': {'title': name, 'main_content': '이전 본문', 'notice': '이전 조건'}} for name in companies}
+        def crawl(driver, company):
+            return {'u': {'title': company['name'], 'main_content': '' if company['name'] == companies[0] else '갱신 본문', 'notice': '갱신 조건'}}
+        with tempfile.TemporaryDirectory() as temp:
+            Path(temp, 'data_20260908_000000.json').write_text(json.dumps(previous), encoding='utf-8')
+            with patch.object(main, 'DATA_DIR', temp), patch.object(main, 'FILE_TIMESTAMP', '20260908_010000'), patch.object(main, 'setup_driver', return_value=Mock()), patch.object(main, 'crawl_site_logic', side_effect=crawl):
+                main.main()
+            saved = json.loads(Path(temp, 'data_20260908_010000.json').read_text(encoding='utf-8'))
+            self.assertEqual('이전 본문', saved[companies[0]]['u']['main_content'])
+            self.assertEqual('갱신 본문', saved[companies[1]]['u']['main_content'])
+            self.assertEqual(1, len(collection_warnings(saved)))
 
     def test_retry_does_not_duplicate_csv_rows(self):
         import pandas as pd

@@ -17,7 +17,7 @@ parser.py
 """
 
 import os
-from monitor_core import detect_changes, calculate_notice_diff, validate_snapshot
+from monitor_core import detect_changes, calculate_notice_diff, validate_snapshot, collection_warnings
 import json
 import time
 import glob
@@ -355,7 +355,7 @@ def calculate_notice_changes(curr_data: dict, prev_data: dict) -> dict:
 # Slack
 # =========================================================
 
-def send_slack_report(total_change: int, event_details: list, notice_changes: dict):
+def send_slack_report(total_change: int, event_details: list, notice_changes: dict, warnings=None):
     if not slack_webhook_url:
         print("⚠️ SLACK_WEBHOOK_URL 없음")
         return
@@ -366,7 +366,7 @@ def send_slack_report(total_change: int, event_details: list, notice_changes: di
         "https://share.streamlit.io/rodolfochoi911-lgtm/competitor-monitor/main/Home.py"
     )
 
-    if total_change == 0 and not notice_changes:
+    if total_change == 0 and not notice_changes and not warnings:
         msg = f"[{now_str}] 경쟁사 동향 보고\n\n특이사항 없음\n\n대시보드: {dashboard_url}"
     else:
         body = "\n".join(event_details) if event_details else "이벤트 변동 없음"
@@ -380,6 +380,9 @@ def send_slack_report(total_change: int, event_details: list, notice_changes: di
             for label, key in [('추가', 'added'), ('삭제', 'removed')]:
                 for line in changes[key][:2]:
                     msg += f"\n  {label}: {line[:240]}"
+    if warnings:
+        msg += f'\n\n⚠️ 수집 확인 필요 {len(warnings)}건 (이전 값 보존)'
+        msg += '\n' + '\n'.join(warnings[:5])
     try:
         r = requests.post(slack_webhook_url, json={"text": msg}, timeout=10)
         r.raise_for_status()
@@ -514,7 +517,7 @@ def run_parser():
     # 이벤트 변경 + 유의사항 변경 분리 감지 → Slack
     total_chg, _, event_details = calculate_changes(raw_curr, raw_prev)
     notice_changes = calculate_notice_changes(raw_curr, raw_prev)
-    send_slack_report(total_chg, event_details, notice_changes)
+    send_slack_report(total_chg, event_details, notice_changes, collection_warnings(raw_curr))
 
 
 if __name__ == "__main__":

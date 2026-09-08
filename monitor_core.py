@@ -48,14 +48,43 @@ def calculate_notice_diff(current, previous):
 
 
 def validate_snapshot(current, previous=None):
-    """Never interpret an unverified empty or partial crawl as event termination."""
+    """Reject empty/missing company collections before interpreting event termination."""
     if not current or any(not events for events in current.values()):
         raise RuntimeError('수집 결과가 비어 있습니다. 정상 데이터와 종료 판정을 보존합니다.')
     for company, events in (previous or {}).items():
         if company not in current:
             raise RuntimeError(f'{company}: 수집 결과 누락')
-        for url in set(events) & set(current[company]):
-            old, new = events[url], current[company][url]
+
+
+def preserve_unavailable_fields(current, previous, previous_snapshot=''):
+    """Keep last known text on transient empty extraction, with explicit provenance.
+
+    This is not a successful observation of that field. A recovered nonempty value
+    clears the marker naturally because the crawler constructs fresh event records.
+    Missing companies still fail validation; missing URLs are not restored here.
+    """
+    validate_snapshot(current, previous)
+    for company, events in current.items():
+        for url, event in events.items():
+            old = previous.get(company, {}).get(url, {})
+            retained = {}
             for field in ('main_content', 'notice'):
-                if clean_text(old.get(field)) and not clean_text(new.get(field)):
-                    raise RuntimeError(f'{company}: {field} 추출 누락 ({url})')
+                if clean_text(old.get(field)) and not clean_text(event.get(field)):
+                    event[field] = old[field]
+                    retained[field] = old.get('_retained_fields', {}).get(field) or previous_snapshot
+            if retained:
+                event['_retained_fields'] = retained
+                event['full_text'] = '\n\n'.join(filter(None, [event.get('main_content'), event.get('notice')]))
+    return collection_warnings(current)
+
+
+def collection_warnings(data):
+    labels = {'main_content': '본문', 'notice': '유의사항'}
+    warnings = []
+    for company, events in sorted(data.items()):
+        for url, event in sorted(events.items()):
+            retained = event.get('_retained_fields', {})
+            if retained:
+                fields = ', '.join(labels.get(field, field) for field in retained)
+                warnings.append(f"{company} / {event.get('title', url)}: {fields} 재확인 필요, 이전 수집값 보존 ({url})")
+    return warnings

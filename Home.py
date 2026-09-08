@@ -1,6 +1,6 @@
 """프로모션 목록과 본문·유의사항 변경을 확인하는 대시보드."""
 
-from monitor_core import detect_changes, calculate_notice_diff
+from monitor_core import detect_changes, calculate_notice_diff, collection_warnings
 import streamlit as st
 import pandas as pd
 import altair as alt
@@ -61,6 +61,14 @@ df_events  = load_events(get_mtime("data/dashboard_latest.csv"))
 
 json_files = sorted(glob.glob("data/data_*.json"), reverse=True)
 changes = calculate_changes(get_mtime(json_files[0]) if json_files else 0)
+if json_files:
+    with open(json_files[0], encoding='utf-8') as snapshot_file:
+        warnings = collection_warnings(json.load(snapshot_file))
+    if warnings:
+        st.warning(f'수집 확인 필요 {len(warnings)}건: 일부 본문·유의사항은 이전 수집값입니다.')
+        with st.expander('이전 값을 보존한 항목'):
+            for warning in warnings:
+                st.write(warning)
 
 # ── 헤더 ─────────────────────────────────────────────────
 col_title, col_refresh = st.columns([6, 1])
