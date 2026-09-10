@@ -23,7 +23,7 @@ def detect_changes(old, new):
 
 AMOUNT_NOTICE_RE = re.compile(
     r'(?:\d[\d,]*(?:\.\d+)?\s*(?:억|만|천)?\s*원|'
-    r'\d[\d,]*(?:\.\d+)?\s*(?:포인트|point|points|p)\b)',
+    r'\d[\d,]*(?:\.\d+)?\s*(?:억|만|천)?\s*(?:포인트|point|points|p)\b)',
     re.IGNORECASE,
 )
 PERCENT_BENEFIT_RE = re.compile(
