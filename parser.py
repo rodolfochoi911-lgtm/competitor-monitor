@@ -17,7 +17,8 @@ parser.py
 """
 
 import os
-from monitor_core import detect_changes, calculate_notice_diff, validate_snapshot, collection_warnings
+from monitor_core import (detect_changes, calculate_notice_diff, validate_snapshot,
+                          collection_warnings, notice_lines)
 import json
 import time
 import glob
@@ -260,7 +261,9 @@ def collect_unique_notices(items: dict, company: str = "") -> list:
             continue
 
         for item_text in split_into_notice_items(cleaned):
-            all_items.append({"line": item_text, "url": url, "title": info.get('title', '')})
+            # 금액 혜택/금액 조건이 없는 일반 안내, 조회수, 검색일 등은 저장하지 않는다.
+            if notice_lines(item_text):
+                all_items.append({"line": item_text, "url": url, "title": info.get('title', '')})
 
     # 이벤트 URL별 원문 중복 제거
     seen_normalized = set()
@@ -269,7 +272,8 @@ def collect_unique_notices(items: dict, company: str = "") -> list:
     skipped_dup = 0
 
     for item in all_items:
-        exact_fp = (item["url"], normalize_for_dedup(item["line"]))
+        # 회사 전체 유의사항을 하나로 합치므로 이벤트 URL이 달라도 같은 문장은 한 번만 남긴다.
+        exact_fp = normalize_for_dedup(item["line"])
         norm_fp = exact_fp
 
         if exact_fp in seen_exact or norm_fp in seen_normalized:
@@ -522,4 +526,5 @@ def run_parser():
 
 if __name__ == "__main__":
     run_parser()
+
 

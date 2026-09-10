@@ -12,35 +12,57 @@ def clean_text(value):
 
 def detect_changes(old, new):
     changes = {}
-    for field in ('title', 'img', 'main_content'):
+    # 본문에는 조회수, 검색일 등 수집 때마다 달라지는 값이 섞인다.
+    # 행사 자체의 수정 판정은 안정적인 제목과 이미지만 사용한다.
+    for field in ('title', 'img'):
         before, after = old.get(field, '') or '', new.get(field, '') or ''
         if (before != after if field == 'img' else clean_text(before) != clean_text(after)):
             changes[field] = {'old': before, 'new': after}
     return changes
 
 
+AMOUNT_NOTICE_RE = re.compile(
+    r'(?:\d[\d,]*(?:\.\d+)?\s*(?:억|만|천)?\s*원|'
+    r'\d[\d,]*(?:\.\d+)?\s*(?:포인트|point|points|p)\b)',
+    re.IGNORECASE,
+)
+PERCENT_BENEFIT_RE = re.compile(
+    r'\d+(?:\.\d+)?\s*%.*(?:할인|적립|캐시백|환급)|'
+    r'(?:할인|적립|캐시백|환급).*\d+(?:\.\d+)?\s*%'
+)
+
+
 def notice_lines(value):
+    """금액 혜택과 조건에 관계된 유의사항만 반환한다."""
     soup = BeautifulSoup(value or '', 'html.parser')
     for tag in soup(['script', 'style', 'noscript']):
         tag.decompose()
     footer = {'이용약관', '개인정보처리방침', '개인정보 처리방침', '로그인', '회원가입'}
-    return {re.sub(r'\s+', ' ', line).strip()
-            for line in soup.get_text('\n', strip=True).splitlines()
-            if line.strip() and line.strip() not in footer}
+    lines = set()
+    for raw_line in soup.get_text('\n', strip=True).splitlines():
+        line = re.sub(r'\s+', ' ', raw_line).strip()
+        if not line or line in footer:
+            continue
+        if AMOUNT_NOTICE_RE.search(line) or PERCENT_BENEFIT_RE.search(line):
+            lines.add(line)
+    return lines
+
+
+def company_notice_lines(data, company):
+    """이벤트 경계를 없애고 회사별 금액 유의사항을 하나로 합친다."""
+    result = set()
+    for event in data.get(company, {}).values():
+        result.update(notice_lines(event.get('notice')))
+    return result
 
 
 def calculate_notice_diff(current, previous):
     result = {}
     for company in sorted(set(current) | set(previous)):
-        curr, prev = current.get(company, {}), previous.get(company, {})
-        added, removed = [], []
-        for url in sorted(set(curr) | set(prev)):
-            old, new = prev.get(url, {}), curr.get(url, {})
-            before, after = notice_lines(old.get('notice')), notice_lines(new.get('notice'))
-            title = new.get('title') or old.get('title') or company
-            label = f'[{title}] ({url}) '
-            added.extend(label + line for line in sorted(after - before))
-            removed.extend(label + line for line in sorted(before - after))
+        before = company_notice_lines(previous, company)
+        after = company_notice_lines(current, company)
+        added = sorted(after - before)
+        removed = sorted(before - after)
         if added or removed:
             result[company] = {'added': added, 'removed': removed,
                                'total': len(added) + len(removed)}
@@ -88,3 +110,4 @@ def collection_warnings(data):
                 fields = ', '.join(labels.get(field, field) for field in retained)
                 warnings.append(f"{company} / {event.get('title', url)}: {fields} 재확인 필요, 이전 수집값 보존 ({url})")
     return warnings
+

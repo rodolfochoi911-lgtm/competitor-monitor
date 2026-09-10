@@ -12,8 +12,8 @@ from datetime import datetime, timezone
 
 
 class PromotionRegressionTests(unittest.TestCase):
-    def test_body_only_change_is_detected(self):
-        self.assertIn('main_content', detect_changes(
+    def test_body_noise_is_not_an_event_change(self):
+        self.assertEqual({}, detect_changes(
             {'title': '행사', 'img': 'same', 'main_content': '3만원 지급'},
             {'title': '행사', 'img': 'same', 'main_content': '5만원 지급'}))
 
@@ -23,19 +23,29 @@ class PromotionRegressionTests(unittest.TestCase):
 
     def test_amount_and_date_variants_are_preserved(self):
         items = {'url1': {'title': '행사', 'notice': '가입 고객에게 상품권 30,000원을 지급합니다.\n가입 고객에게 상품권 50,000원을 지급합니다.\n2026년 9월 10일까지 가입한 고객에게 지급합니다.\n2026년 9월 20일까지 가입한 고객에게 지급합니다.'}}
-        self.assertEqual(4, len(parser.collect_unique_notices(items)))
+        self.assertEqual(2, len(parser.collect_unique_notices(items)))
 
     def test_identical_notice_keeps_both_event_sources(self):
         text = '가입 고객에게 상품권 30,000원을 지급합니다.'
         result = parser.collect_unique_notices({'a': {'notice': text}, 'b': {'notice': text}})
-        self.assertEqual({'a', 'b'}, {x['url'] for x in result})
+        self.assertEqual(1, len(result))
 
-    def test_notice_move_between_events_is_not_hidden(self):
+    def test_notice_move_between_events_is_not_a_change(self):
         old = {'company': {'a': {'notice': '5만원 지급'}, 'b': {'notice': ''}}}
         new = {'company': {'a': {'notice': ''}, 'b': {'notice': '5만원 지급'}}}
-        diff = calculate_notice_diff(new, old)['company']
-        self.assertEqual(1, len(diff['added']))
-        self.assertEqual(1, len(diff['removed']))
+        self.assertEqual({}, calculate_notice_diff(new, old))
+
+    def test_views_and_search_dates_are_excluded_from_notice_diff(self):
+        old = {'A': {'u': {'notice': '조회수 123\n검색일 2026-09-09\n상품권 3만원 지급'}}}
+        new = {'A': {'u': {'notice': '조회수 456\n검색일 2026-09-10\n상품권 3만원 지급'}}}
+        self.assertEqual({}, calculate_notice_diff(new, old))
+
+    def test_amount_notice_change_is_detected_without_event_label(self):
+        old = {'A': {'u1': {'title': '행사명', 'notice': '상품권 3만원 지급'}}}
+        new = {'A': {'u2': {'title': '다른 행사명', 'notice': '상품권 5만원 지급'}}}
+        diff = calculate_notice_diff(new, old)['A']
+        self.assertEqual(['상품권 5만원 지급'], diff['added'])
+        self.assertEqual(['상품권 3만원 지급'], diff['removed'])
 
     def test_notice_only_notification_is_not_no_change(self):
         with patch.object(parser, 'slack_webhook_url', 'https://example.invalid'), patch.object(parser.requests, 'post') as post:
@@ -127,3 +137,4 @@ class PromotionRegressionTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
