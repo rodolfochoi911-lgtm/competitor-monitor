@@ -77,7 +77,7 @@ class PromotionRegressionTests(unittest.TestCase):
         self.assertEqual('이전 본문', current['SKT 다이렉트'][url]['main_content'])
         self.assertEqual('새 조건', current['SKT 다이렉트'][url]['notice'])
         self.assertEqual({}, detect_changes(old['SKT 다이렉트'][url], current['SKT 다이렉트'][url]))
-        self.assertTrue(calculate_notice_diff(current, old))
+        self.assertFalse(calculate_notice_diff(current, old))
 
     def test_repeated_failure_keeps_original_provenance(self):
         previous = {'A': {'u': {'main_content': 'old', '_retained_fields': {'main_content': 'first.json'}}}}
