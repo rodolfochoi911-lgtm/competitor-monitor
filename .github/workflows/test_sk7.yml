@@ -1,0 +1,23 @@
+name: 🧪 SK7 Mobile Title Test
+
+on:
+  workflow_dispatch: # 수동 실행 버튼
+
+jobs:
+  test-sk7:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run SK7 Test Script
+        run: python test_sk7.py
