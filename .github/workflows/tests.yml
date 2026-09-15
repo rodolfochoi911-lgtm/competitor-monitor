@@ -1,0 +1,21 @@
+name: Regression tests
+on:
+  push:
+    branches: [main]
+    paths: ['**.py', '.github/workflows/**', 'requirements*.txt']
+  pull_request:
+    paths: ['**.py', '.github/workflows/**', 'requirements*.txt']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - run: pip install pandas beautifulsoup4 requests python-dotenv pytz selenium undetected-chromedriver webdriver-manager
+      - run: python -m unittest discover -s tests -v
