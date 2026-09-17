@@ -1,8 +1,8 @@
 name: Daily Competitor Monitor
 on:
   schedule:
-    - cron: '7 21 * * *'   # 한국 아침 06:07 (UTC 전날 21:07)
-    - cron: '12 6 * * *'   # 한국 오후 15:12 (UTC 06:12)
+    - cron: '45 18 * * *'   # KST 03:45 → 실제 약 06:07 예상
+    - cron: '49 0 * * *'    # KST 09:49 → 실제 약 15:12 예상
   workflow_dispatch:
 
 permissions:
