@@ -1,0 +1,48 @@
+name: Skylife live test
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'main.py'
+      - '.github/workflows/test_skylife_live.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  skylife-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Test Skylife crawler only
+        run: |
+          python - <<'PY'
+          from main import setup_driver, crawl_skylife
+
+          driver = setup_driver()
+          try:
+              data = crawl_skylife(driver)
+              print(f"SKYLIFE_RESULT_COUNT={len(data)}")
+              if not data:
+                  raise RuntimeError("Skylife live test returned 0 events")
+
+              print("SKYLIFE_SAMPLE_START")
+              for idx, (url, event) in enumerate(data.items()):
+                  print(f"{idx+1}. {event.get('title', '')} | {url}")
+                  if idx >= 4:
+                      break
+              print("SKYLIFE_SAMPLE_END")
+          finally:
+              try:
+                  driver.quit()
+              except Exception:
+                  pass
+          PY
