@@ -371,35 +371,77 @@ def crawl_skylife(driver) -> dict:
 
     for page in range(1, 6):
         url = f"{base_url}/event?category=mobile&p={page}"
-        try:
-            driver.get(url)
-            time.sleep(2)
-        except Exception as e:
-            raise RuntimeError(f"스카이라이프 목록 로드 실패 p{page}") from e
-
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
         page_links = []
 
-        for a in soup.find_all('a', href=True):
-            href = a['href']
-            if '/event/' not in href:
-                continue
-            if href.rstrip('/') in ('/event', '/event?category=mobile'):
-                continue
-            full_url = urljoin(base_url, href.split('?')[0])
-            if full_url in result:
+        # p1이 0건이면 실제 이벤트 종료보다 동적 로딩/일시 응답 문제일 가능성이 높다.
+        # 첫 페이지에 한해 최대 3회 재시도하고, 각 시도 안에서도 링크가 렌더링될 시간을 준다.
+        max_attempts = 3 if page == 1 else 1
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                driver.get(url)
+            except Exception as e:
+                if attempt >= max_attempts:
+                    raise RuntimeError(f"스카이라이프 목록 로드 실패 p{page}") from e
+                print(f"   [스카이라이프] p{page} 로드 실패 — {attempt}/{max_attempts} 재시도")
+                time.sleep(2)
                 continue
 
-            img = a.find('img')
-            if not img or not (img.get('src') or img.get('data-src')):
-                continue
-            thumb = urljoin(base_url, img.get('src') or img.get('data-src'))
+            wait_deadline = time.time() + (10 if page == 1 else 4)
 
-            title_el = a.find(class_=re.compile(r'title|tit|heading', re.I))
-            title_text = title_el.get_text(strip=True) if title_el else a.get_text(strip=True)
-            page_links.append((full_url, thumb, title_text))
+            while time.time() < wait_deadline:
+                soup = BeautifulSoup(driver.page_source, 'html.parser')
+                page_links = []
+
+                for a in soup.find_all('a', href=True):
+                    href = a['href']
+                    if '/event/' not in href:
+                        continue
+                    if href.rstrip('/') in ('/event', '/event?category=mobile'):
+                        continue
+                    full_url = urljoin(base_url, href.split('?')[0])
+                    if full_url in result:
+                        continue
+
+                    img = a.find('img')
+                    if not img or not (img.get('src') or img.get('data-src')):
+                        continue
+                    thumb = urljoin(base_url, img.get('src') or img.get('data-src'))
+
+                    title_el = a.find(class_=re.compile(r'title|tit|heading', re.I))
+                    title_text = title_el.get_text(strip=True) if title_el else a.get_text(strip=True)
+                    page_links.append((full_url, thumb, title_text))
+
+                if page_links:
+                    break
+
+                time.sleep(1)
+
+            if page_links:
+                break
+
+            current_url = ""
+            page_title = ""
+            html_len = 0
+            try:
+                current_url = driver.current_url
+                page_title = driver.title
+                html_len = len(driver.page_source or "")
+            except Exception:
+                pass
+
+            if attempt < max_attempts:
+                print(
+                    f"   [스카이라이프] p{page} 링크 0건 "
+                    f"({attempt}/{max_attempts}, url={current_url}, title={page_title!r}, html={html_len}자) — 재시도"
+                )
+                time.sleep(2)
 
         if not page_links:
+            if page == 1:
+                raise RuntimeError(
+                    "스카이라이프 p1 이벤트 링크 0건 — 동적 로딩 또는 일시 응답 이상 가능성"
+                )
             print(f"   [스카이라이프] p{page} 링크 없음 — 수집 종료")
             break
 
