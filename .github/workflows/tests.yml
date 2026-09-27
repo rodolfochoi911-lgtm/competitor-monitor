@@ -17,5 +17,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.9'
-      - run: pip install pandas beautifulsoup4 requests python-dotenv pytz selenium undetected-chromedriver webdriver-manager
+      - run: pip install pandas openpyxl beautifulsoup4 requests python-dotenv pytz selenium undetected-chromedriver webdriver-manager
       - run: python -m unittest discover -s tests -v
