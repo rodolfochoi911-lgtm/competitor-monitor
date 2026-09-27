@@ -27,6 +27,21 @@ YESTERDAY_DOT = YESTERDAY.strftime('%y.%m.%d')   # 25.02.01
 
 print(f"📅 타겟 날짜: {YESTERDAY_FULL}")
 
+BRAND_KEYWORDS = {
+    '세븐모바일': ['세븐모바일', '7모', 'sk7', 'sk텔링크'],
+    '모빙': ['모빙'],
+    '리브엠': ['리브엠', '리브모바일', 'kb'],
+    '이야기': ['이야기', '이야기모바일'],
+    '헬로모바일': ['헬로모바일', '헬모'],
+    '프리티': ['프리티'],
+    '티플러스': ['티플러스', '티플'],
+    '티다이렉트': ['티다이렉트', '티다', 't다이렉트', 't다'],
+    'KT엠모바일': ['kt엠모바일', '엠모바일', '엠모', 'ktm'],
+    '스카이라이프': ['스카이라이프', '스카라', 'skylife'],
+    '유모바일': ['유모바일', '유모', 'u모바일', '유알모'],
+    'SKT_Air': ['skt에어', 'skt air']
+}
+
 # --- [1. 브라우저 설정] ---
 def get_driver():
     chrome_options = Options()
@@ -172,8 +187,8 @@ def get_dc_posts(driver):
     return posts
 
 # --- [4. 분석 로직] ---
-def extract_top_keywords(df):
-    if df.empty: return []
+def extract_keyword_counts(df):
+    if df.empty: return Counter()
     all_titles = " ".join(df['title'].tolist())
     all_titles = re.sub(r'[^\w\s]', ' ', all_titles)
     words = all_titles.split()
@@ -191,7 +206,38 @@ def extract_top_keywords(df):
         '있음', '알뜰', '요금', '번호', '이동', '통신사' # 추가된 노이즈
     ])
     filtered_words = [w for w in words if len(w) >= 2 and w.lower() not in stopwords]
-    return Counter(filtered_words).most_common(10)
+    return Counter(filtered_words)
+
+
+def extract_top_keywords(df):
+    return extract_keyword_counts(df).most_common(10)
+
+
+def count_brand_mentions(df):
+    """Return the existing brand metric for one dataframe slice."""
+    counts = {}
+    for brand, keywords in BRAND_KEYWORDS.items():
+        if df.empty:
+            counts[brand] = 0
+            continue
+        matched = df['title'].apply(
+            lambda title: any(keyword in str(title).lower() for keyword in keywords)
+        )
+        counts[brand] = int(matched.sum())
+    return counts
+
+
+def aggregate_metrics_by_source(df):
+    """Build additive source-level metrics without changing legacy totals."""
+    brand_sov_by_source = {}
+    keywords_raw_by_source = {}
+
+    for source in ('ppomppu', 'dc'):
+        source_df = df[df['source'] == source]
+        brand_sov_by_source[source] = count_brand_mentions(source_df)
+        keywords_raw_by_source[source] = dict(extract_keyword_counts(source_df))
+
+    return brand_sov_by_source, keywords_raw_by_source
 
 def analyze_and_notify(p_posts, d_posts):
     total_posts = p_posts + d_posts
@@ -207,32 +253,17 @@ def analyze_and_notify(p_posts, d_posts):
     d_status = "🔴 과열" if d_cnt >= 600 else ("🟢 평온" if d_cnt < 300 else "🟡 활발")
 
     # 1. 브랜드 점유율 (세븐모바일 고정 노출 로직 추가)
-    brands = {
-        '세븐모바일': ['세븐모바일', '7모', 'sk7', 'sk텔링크'],
-        '모빙': ['모빙'],
-        '리브엠': ['리브엠', '리브모바일', 'kb'],
-        '이야기': ['이야기', '이야기모바일'],
-        '헬로모바일': ['헬로모바일', '헬모'],
-        '프리티': ['프리티'],
-        '티플러스': ['티플러스', '티플'],
-        '티다이렉트': ['티다이렉트', '티다', 't다이렉트', 't다'],
-        'KT엠모바일': ['kt엠모바일', '엠모바일', '엠모', 'ktm'],
-        '스카이라이프': ['스카이라이프', '스카라', 'skylife'],
-        '유모바일': ['유모바일', '유모', 'u모바일', '유알모'],
-        'SKT_Air': ['skt에어', 'skt air']
-    }
-    
-    brand_counts = {}
+    brand_counts = count_brand_mentions(df)
     seven_links = [] # 세븐모바일 링크 수집
 
-    # 카운팅 먼저 수행
-    for b_name, keywords in brands.items():
-        filtered = df[df['title'].apply(lambda x: any(k in x.lower() for k in keywords))]
-        brand_counts[b_name] = int(len(filtered))
-        
-        if b_name == '세븐모바일' and len(filtered) > 0:
-            for _, row in filtered.iterrows():
-                seven_links.append(f"  └ <{row['link']}|{row['title']}>")
+    seven_keywords = BRAND_KEYWORDS['세븐모바일']
+    seven_filtered = df[df['title'].apply(
+        lambda title: any(keyword in str(title).lower() for keyword in seven_keywords)
+    )]
+    for _, row in seven_filtered.iterrows():
+        seven_links.append(f"  └ <{row['link']}|{row['title']}>")
+
+    brand_sov_by_source, keywords_raw_by_source = aggregate_metrics_by_source(df)
 
     # [수정] 출력 순서 제어 (세븐모바일 1순위, 나머지 >0 건만)
     sov_lines = []
@@ -285,7 +316,9 @@ def analyze_and_notify(p_posts, d_posts):
         "total_volume": { "ppomppu": p_cnt, "dc": d_cnt },
         "brand_sov": brand_counts,
         "top_keywords": dict(top_keywords),
-        "top_posts": { "ppomppu": p_top5, "dc": d_top5 }
+        "top_posts": { "ppomppu": p_top5, "dc": d_top5 },
+        "brand_sov_by_source": brand_sov_by_source,
+        "keywords_raw_by_source": keywords_raw_by_source
     }
     
     history_data = [d for d in history_data if d['date'] != YESTERDAY_FULL]

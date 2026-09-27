@@ -1,0 +1,44 @@
+name: Daily MVNO Market Monitor
+
+on:
+  schedule:
+    - cron: '0 21 * * *'  # KST 06:00
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: monitoring-data
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 파이썬 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: 라이브러리 설치
+        run: pip install -r requirements.txt
+
+      - name: 시장 데이터 수집
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: python scripts/monitor_crawler.py
+
+      - name: source 보존 데이터 저장
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          git add data/dashboard_history.json data/monitoring/*.json
+          git diff --cached --quiet && echo "변경사항 없음" || git commit -m "📊 Daily market update: $(date)"
+          git pull --rebase origin main
+          git push
