@@ -1,5 +1,11 @@
 """프로모션 목록과 본문·유의사항 변경을 확인하는 대시보드."""
 
+import importlib
+import monitor_core
+
+# A running Streamlit process can retain the module from before deployment.
+if not all(hasattr(monitor_core, name) for name in ('snapshot_warnings', 'comparison_snapshots')):
+    importlib.reload(monitor_core)
 from monitor_core import detect_changes, calculate_notice_diff, snapshot_warnings, comparison_snapshots
 import streamlit as st
 import pandas as pd

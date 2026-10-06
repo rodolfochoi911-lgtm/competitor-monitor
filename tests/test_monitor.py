@@ -13,6 +13,18 @@ from monitor_core import prepare_partial_snapshot, successful_snapshot, snapshot
 
 
 class PromotionRegressionTests(unittest.TestCase):
+    def test_dashboard_imports_recover_cached_predeployment_module(self):
+        import monitor_core
+        for page in (Path('Home.py'), Path('pages/2_🚨_프로모션 변경 리포트.py')):
+            with self.subTest(page=str(page)):
+                del monitor_core.snapshot_warnings
+                del monitor_core.comparison_snapshots
+                prefix = page.read_text(encoding='utf-8').split('import streamlit as st', 1)[0]
+                namespace = {}
+                exec(compile(prefix, str(page), 'exec'), namespace)
+                self.assertEqual({}, namespace['comparison_snapshots']({}, {})[0])
+                self.assertEqual([], namespace['snapshot_warnings']({}, 'missing/data_test.json'))
+
     def test_tdirect_list_closes_offer_before_reading_event_cards(self):
         import main
         driver = Mock()
