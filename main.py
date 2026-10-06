@@ -19,7 +19,7 @@ from bs4 import BeautifulSoup
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.common.exceptions import TimeoutException, UnexpectedAlertPresentException, NoAlertPresentException
+from selenium.common.exceptions import TimeoutException, UnexpectedAlertPresentException, NoAlertPresentException, ElementClickInterceptedException, StaleElementReferenceException
 
 from content_extractor import extract_page_content
 
@@ -143,6 +143,13 @@ def extract_list_with_thumbnails(
         time.sleep(2)
         soup = BeautifulSoup(driver.page_source, 'html.parser')
 
+        if site_name == 'SKT 다이렉트':
+            # 자동 할인 팝업/헤더/푸터의 링크를 이벤트로 수집하지 않는다.
+            area = soup.select_one('.event-list')
+            if area is None:
+                raise RuntimeError('T다이렉트 이벤트 목록 영역 없음')
+            soup = area
+
         if site_name == "SK 7세븐모바일":
             area = soup.select_one("#ct > section")
             if area:
@@ -222,6 +229,47 @@ def extract_list_with_thumbnails(
 # =========================================================
 # 상세 페이지 방문 + 동적 콘텐츠 추출
 # =========================================================
+def dismiss_tdirect_promotions(driver):
+    """Close only observed promotional overlays, never order/login controls."""
+    closed = 0
+    for selector in ('#trgtSupmOfferPop #offerPopClose', '#ofrMsgBox .js-modal-close'):
+        for button in driver.find_elements(By.CSS_SELECTOR, selector):
+            try:
+                if not button.is_displayed():
+                    continue
+                try:
+                    button.click()
+                except ElementClickInterceptedException:
+                    driver.execute_script('arguments[0].click();', button)
+                WebDriverWait(driver, 3).until(lambda d: not button.is_displayed())
+                closed += 1
+                print('   ℹ️ T다이렉트 자동 할인 팝업 닫기')
+            except StaleElementReferenceException:
+                # Closing an overlay may remove its DOM node entirely.
+                continue
+    return closed
+
+
+def open_tdirect_list(driver, url):
+    """Wait for actual event cards and dismiss delayed promotional overlays."""
+    for attempt in range(2):
+        try:
+            _dismiss_detail_alert(driver)
+            try:
+                driver.get(url)
+            except TimeoutException:
+                print('   ⚠️ T다이렉트 목록 로딩 시간 초과 — 이벤트 영역 확인')
+            def list_ready(d):
+                dismiss_tdirect_promotions(d)
+                return d.find_elements(By.CSS_SELECTOR, '.event-list .event-item a[href*="exhibitionId="]')
+            WebDriverWait(driver, 15).until(list_ready)
+            return
+        except (TimeoutException, UnexpectedAlertPresentException) as e:
+            _dismiss_detail_alert(driver)
+            if attempt == 1:
+                raise RuntimeError(f'T다이렉트 목록 준비 실패: {url} [{type(e).__name__}: {e}]') from e
+
+
 def _dismiss_detail_alert(driver):
     try:
         alert = driver.switch_to.alert
@@ -240,6 +288,7 @@ def open_detail_page(driver, url, site_name):
     for attempt in range(2):
         try:
             _dismiss_detail_alert(driver)
+            dismiss_tdirect_promotions(driver)
             try:
                 driver.get(url)
             except TimeoutException:
@@ -256,6 +305,7 @@ def open_detail_page(driver, url, site_name):
                         return False
                 return d.execute_script("return !!document.body && document.body.innerText.trim().length > 50")
             WebDriverWait(driver, 15).until(detail_ready)
+            dismiss_tdirect_promotions(driver)
             return
         except (TimeoutException, UnexpectedAlertPresentException) as e:
             print(f'   ⚠️ T다이렉트 상세 재시도 {attempt + 1}/2 [{type(e).__name__}: {e}]')
@@ -563,7 +613,10 @@ def crawl_site_logic(driver, comp: dict) -> dict:
             t_url = comp['url']
 
         try:
-            driver.get(t_url)
+            if comp['name'] == 'SKT 다이렉트':
+                open_tdirect_list(driver, t_url)
+            else:
+                driver.get(t_url)
         except Exception as e:
             raise RuntimeError(f"목록 페이지 로드 실패: {comp['name']} p{page}") from e
 

@@ -13,10 +13,62 @@ from monitor_core import prepare_partial_snapshot, successful_snapshot, snapshot
 
 
 class PromotionRegressionTests(unittest.TestCase):
+    def test_tdirect_list_closes_offer_before_reading_event_cards(self):
+        import main
+        driver = Mock()
+        close = Mock()
+        close.is_displayed.side_effect = [True, False]
+        order = []
+        close.click.side_effect = lambda: order.append('close')
+        def find(by, selector):
+            if selector == '#trgtSupmOfferPop #offerPopClose':
+                return [close]
+            if selector.startswith('.event-list'):
+                order.append('events')
+                return [Mock()]
+            return []
+        driver.find_elements.side_effect = find
+        with patch.object(main, '_dismiss_detail_alert'):
+            main.open_tdirect_list(driver, 'https://shop.tworld.co.kr/exhibition/submain')
+        self.assertEqual(['close', 'events'], order)
+        driver.execute_script.assert_not_called()
+
+    def test_tdirect_hidden_offer_is_not_clicked(self):
+        import main
+        driver = Mock()
+        close = Mock()
+        close.is_displayed.return_value = False
+        driver.find_elements.side_effect = lambda by, selector: [close] if selector.startswith('#trgt') else []
+        self.assertEqual(0, main.dismiss_tdirect_promotions(driver))
+        close.click.assert_not_called()
+
+    def test_tdirect_list_excludes_popup_and_header_links(self):
+        import main
+        driver = Mock()
+        driver.page_source = '''<a href="/event/header"><img src="header.png"></a>
+        <section id="trgtSupmOfferPop"><a href="/event/offer"><img src="offer.png"></a></section>
+        <ul class="event-list"><li class="event-item"><a href="/nf/index_nf_yp_plan.html?exhibitionId=P00000525"><img src="roulette.png" alt="럭키 룰렛"></a></li></ul>'''
+        with patch.object(main.time, 'sleep'):
+            targets = main.extract_list_with_thumbnails(driver, 'SKT 다이렉트', ['event', 'plan'], base_url='https://shop.tworld.co.kr')
+        self.assertEqual(['https://shop.tworld.co.kr/nf/index_nf_yp_plan.html?exhibitionId=P00000525'], list(targets))
+
+    def test_tdirect_list_checks_delayed_popup_when_cards_arrive(self):
+        import main
+        driver = Mock()
+        waiter = Mock()
+        driver.find_elements.return_value = [Mock()]
+        def wait_until(predicate):
+            return predicate(driver)
+        waiter.until.side_effect = wait_until
+        with patch.object(main, '_dismiss_detail_alert'), patch.object(main, 'dismiss_tdirect_promotions') as dismiss, patch.object(main, 'WebDriverWait', return_value=waiter):
+            main.open_tdirect_list(driver, 'https://shop.tworld.co.kr/exhibition/submain')
+        dismiss.assert_called_once_with(driver)
+
     def test_tdirect_retries_blocking_alert_before_extracting(self):
         import main
         from selenium.common.exceptions import UnexpectedAlertPresentException, NoAlertPresentException
         driver = Mock()
+        driver.find_elements.return_value = []
         driver.get.side_effect = [UnexpectedAlertPresentException('popup'), None]
         driver.current_url = 'https://shop.tworld.co.kr/exhibition/view?exhibitionId=P00000525'
         driver.execute_script.return_value = True
@@ -29,6 +81,7 @@ class PromotionRegressionTests(unittest.TestCase):
         import main
         from selenium.common.exceptions import TimeoutException
         driver = Mock()
+        driver.find_elements.return_value = []
         driver.get.side_effect = TimeoutException('slow resource')
         driver.current_url = 'https://shop.tworld.co.kr/exhibition/view?exhibitionId=P00000525'
         driver.execute_script.return_value = True
@@ -40,6 +93,7 @@ class PromotionRegressionTests(unittest.TestCase):
         import main
         from selenium.common.exceptions import TimeoutException
         driver = Mock()
+        driver.find_elements.return_value = []
         driver.current_url = 'https://shop.tworld.co.kr/nf/index_nf_yp_plan.html?exhibitionId=P00000525'
         waiter = Mock()
         def wait_until(predicate):
