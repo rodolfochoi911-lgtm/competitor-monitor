@@ -1,5 +1,8 @@
 """Shared change detection for notifications and the dashboard."""
 import re
+import copy
+import json
+from pathlib import Path
 from bs4 import BeautifulSoup
 
 
@@ -57,6 +60,7 @@ def company_notice_lines(data, company):
 
 
 def calculate_notice_diff(current, previous):
+    current, previous = comparison_snapshots(current, previous)
     result = {}
     for company in sorted(set(current) | set(previous)):
         before = company_notice_lines(previous, company)
@@ -104,10 +108,50 @@ def collection_warnings(data):
     labels = {'main_content': '본문', 'notice': '유의사항'}
     warnings = []
     for company, events in sorted(data.items()):
+        if any(event.get('_collection_error') for event in events.values()):
+            warnings.append(f'{company}: 수집 실패로 이번 결과 및 변경 집계에서 제외 (이전 데이터는 비교 기준으로 보관)')
+            continue
         for url, event in sorted(events.items()):
             retained = event.get('_retained_fields', {})
             if retained:
                 fields = ', '.join(labels.get(field, field) for field in retained)
                 warnings.append(f"{company} / {event.get('title', url)}: {fields} 재확인 필요, 이전 수집값 보존 ({url})")
+    return warnings
+
+
+def successful_snapshot(data):
+    """Exclude retained company baselines from fresh observations."""
+    return {company: events for company, events in data.items()
+            if events and not any(event.get('_collection_error') for event in events.values())}
+
+
+def comparison_snapshots(current, previous):
+    current = successful_snapshot(current)
+    return current, {company: events for company, events in previous.items() if company in current}
+
+
+def prepare_partial_snapshot(results, previous, errors):
+    """Publish successful companies, carrying failed baselines for recovery only."""
+    successful = {company: events for company, events in results.items() if events and company not in errors}
+    if not successful:
+        raise RuntimeError('모든 회사 수집 실패: 이전 정상 데이터를 유지합니다.')
+    snapshot = copy.deepcopy(successful)
+    for company, events in previous.items():
+        if company not in snapshot and events:
+            snapshot[company] = copy.deepcopy(events)
+            for event in snapshot[company].values():
+                event['_collection_error'] = errors.get(company, '수집 결과 누락')
+    validate_snapshot(snapshot, previous)
+    return snapshot
+
+
+def snapshot_warnings(data, snapshot_path):
+    warnings = collection_warnings(data)
+    status_path = Path(snapshot_path).with_name(Path(snapshot_path).name.replace('data_', 'collection_status_', 1))
+    if status_path.exists():
+        errors = json.loads(status_path.read_text(encoding='utf-8'))
+        for company, error in sorted(errors.items()):
+            if company not in data:
+                warnings.append(f'{company}: 수집 실패로 이번 결과에서 제외 ({error})')
     return warnings
 

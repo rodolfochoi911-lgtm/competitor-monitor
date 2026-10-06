@@ -78,7 +78,28 @@ MAIN_CONTENT_SELECTORS = [
 # =========================================================
 # 아코디언 클릭 (4가지 방법 순차 시도)
 # =========================================================
+def _is_inline_expander(el):
+    """Only expand content in place; never follow a promotion/popup link."""
+    try:
+        href = (el.get_attribute('href') or '').strip().lower()
+        if href and not href.startswith('#') and not re.fullmatch(r'javascript:\s*(?:void\(0\)|;?)\s*;?', href):
+            return False
+        if (el.get_attribute('target') or '').lower() == '_blank':
+            return False
+        onclick = (el.get_attribute('onclick') or '').lower()
+        if re.search(r'window\.open|location[.=]|(?:open|show)\w*(?:popup|layer)|(?:popup|layer)\w*(?:open|show)', onclick):
+            return False
+        toggle = (el.get_attribute('data-toggle') or '').lower()
+        if toggle in ('modal', 'dialog', 'popover'):
+            return False
+        return True
+    except StaleElementReferenceException:
+        return False
+
+
 def _safe_click(driver, el) -> bool:
+    if not _is_inline_expander(el):
+        return False
     try:
         driver.execute_script(
             "arguments[0].scrollIntoView({block:'center', behavior:'smooth'});", el
@@ -142,6 +163,11 @@ def _click_accordions(driver) -> int:
             By.CSS_SELECTOR, "[data-toggle], [data-open], [data-accordion], [data-collapse]"
         ):
             if not el.is_displayed():
+                continue
+            label = el.text + (el.get_attribute('aria-label') or '')
+            if not (el.get_attribute('data-accordion') is not None
+                    or el.get_attribute('data-collapse') is not None
+                    or any(keyword in label for keyword in NOTICE_KEYWORDS)):
                 continue
             try:
                 parent_class = el.find_element(By.XPATH, "..").get_attribute("class") or ""

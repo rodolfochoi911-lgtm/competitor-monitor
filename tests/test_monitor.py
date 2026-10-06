@@ -9,9 +9,118 @@ import parser
 from monitor_core import detect_changes, calculate_notice_diff, validate_snapshot, preserve_unavailable_fields, collection_warnings
 from scripts.run_timing import timing_report
 from datetime import datetime, timezone
+from monitor_core import prepare_partial_snapshot, successful_snapshot, snapshot_warnings
 
 
 class PromotionRegressionTests(unittest.TestCase):
+    def test_tdirect_retries_blocking_alert_before_extracting(self):
+        import main
+        from selenium.common.exceptions import UnexpectedAlertPresentException, NoAlertPresentException
+        driver = Mock()
+        driver.get.side_effect = [UnexpectedAlertPresentException('popup'), None]
+        driver.current_url = 'https://shop.tworld.co.kr/exhibition/view?exhibitionId=P00000525'
+        driver.execute_script.return_value = True
+        with patch.object(main, '_dismiss_detail_alert') as dismiss:
+            main.open_detail_page(driver, 'https://shop.tworld.co.kr/nf/index_nf_yp_plan.html?exhibitionId=P00000525', 'SKT 다이렉트')
+        self.assertEqual(2, driver.get.call_count)
+        self.assertGreaterEqual(dismiss.call_count, 2)
+
+    def test_tdirect_resource_timeout_uses_ready_detail_body(self):
+        import main
+        from selenium.common.exceptions import TimeoutException
+        driver = Mock()
+        driver.get.side_effect = TimeoutException('slow resource')
+        driver.current_url = 'https://shop.tworld.co.kr/exhibition/view?exhibitionId=P00000525'
+        driver.execute_script.return_value = True
+        with patch.object(main, '_dismiss_detail_alert'):
+            main.open_detail_page(driver, 'https://shop.tworld.co.kr/nf/index_nf_yp_plan.html?exhibitionId=P00000525', 'SKT 다이렉트')
+        self.assertEqual(1, driver.get.call_count)
+
+    def test_tdirect_does_not_collect_empty_netfunnel_shell(self):
+        import main
+        from selenium.common.exceptions import TimeoutException
+        driver = Mock()
+        driver.current_url = 'https://shop.tworld.co.kr/nf/index_nf_yp_plan.html?exhibitionId=P00000525'
+        waiter = Mock()
+        def wait_until(predicate):
+            self.assertFalse(predicate(driver))
+            raise TimeoutException('queue not finished')
+        waiter.until.side_effect = wait_until
+        with patch.object(main, '_dismiss_detail_alert'), patch.object(main, 'WebDriverWait', return_value=waiter):
+            with self.assertRaisesRegex(RuntimeError, 'TimeoutException'):
+                main.open_detail_page(driver, driver.current_url, 'SKT 다이렉트')
+        self.assertEqual(2, driver.get.call_count)
+
+    def test_notice_expander_never_clicks_popup_or_navigation(self):
+        from content_extractor import _safe_click, _is_inline_expander
+        for attrs in [{'href': 'https://tdirect-event.co.kr/promotion/roulette-max'},
+                      {'target': '_blank'}, {'onclick': 'window.open("/popup")'},
+                      {'data-toggle': 'modal'}]:
+            element = Mock()
+            element.get_attribute.side_effect = attrs.get
+            driver = Mock()
+            self.assertFalse(_safe_click(driver, element))
+            driver.execute_script.assert_not_called()
+            element.click.assert_not_called()
+        element = Mock()
+        element.get_attribute.side_effect = {'href': '#notice', 'aria-expanded': 'false'}.get
+        self.assertTrue(_is_inline_expander(element))
+
+    def test_partial_failure_publishes_success_without_false_terminations(self):
+        previous = {'A': {'old': {'title': 'old', 'notice': '3만원 지급'}},
+                    'B': {'old': {'title': 'old', 'notice': '5만원 지급'}}}
+        snapshot = prepare_partial_snapshot({'A': {}, 'B': {'new': {'title': 'new', 'notice': '7만원 지급'}}},
+                                            previous, {'A': 'timeout'})
+        validate_snapshot(snapshot, previous)
+        self.assertEqual({'B'}, set(successful_snapshot(snapshot)))
+        self.assertEqual({'B'}, set(parser.calculate_changes(snapshot, previous)[1]))
+        self.assertEqual({'B'}, set(calculate_notice_diff(snapshot, previous)))
+        self.assertNotIn('_collection_error', previous['A']['old'])
+        self.assertEqual(1, len(collection_warnings(snapshot)))
+        # Consecutive failures retain the baseline; recovery compares to it.
+        again = prepare_partial_snapshot({'B': snapshot['B']}, snapshot, {'A': 'timeout again'})
+        recovered = {'A': previous['A'], 'B': snapshot['B']}
+        self.assertEqual(0, parser.calculate_changes(recovered, again)[0])
+        self.assertEqual([], collection_warnings(recovered))
+
+    def test_all_failed_even_with_previous_data_does_not_publish(self):
+        with self.assertRaises(RuntimeError):
+            prepare_partial_snapshot({'A': {}}, {'A': {'u': {'title': 'old'}}}, {'A': 'timeout'})
+
+    def test_partial_run_reaches_parser_and_exports_only_successful_companies(self):
+        import main
+        import pandas as pd
+        names = ['SKT 다이렉트', 'KTM 모바일', 'U+ 유모바일', '스카이라이프', '헬로모바일', 'SK 7세븐모바일']
+        previous = {name: {'old': {'title': name, 'notice': '상품권 30,000원을 지급합니다.'}} for name in names}
+        def crawl(driver, company):
+            if company['name'] == names[0]:
+                raise RuntimeError('detail timeout')
+            return {'new': {'title': company['name'], 'notice': '상품권 50,000원을 지급합니다.'}}
+        with tempfile.TemporaryDirectory() as temp:
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(temp)
+                Path('data').mkdir()
+                Path('data/data_20261005_000000.json').write_text(json.dumps(previous), encoding='utf-8')
+                with patch.object(main, 'DATA_DIR', 'data'), patch.object(main, 'FILE_TIMESTAMP', '20261006_000000'), patch.object(main, 'setup_driver', return_value=Mock()), patch.object(main, 'crawl_site_logic', side_effect=crawl):
+                    main.main()
+                with patch.object(parser, 'send_slack_report') as report:
+                    parser.run_parser()
+                for filename in ['dashboard_latest.csv', 'notices_latest.csv']:
+                    df = pd.read_csv(Path('data', filename))
+                    self.assertEqual(set(names[1:]), set(df['company']))
+                self.assertTrue(any(names[0] in warning for warning in report.call_args.args[3]))
+                self.assertFalse(any(names[0] in detail for detail in report.call_args.args[1]))
+            finally:
+                os.chdir(old_cwd)
+
+    def test_first_run_failure_is_reported_without_previous_baseline(self):
+        with tempfile.TemporaryDirectory() as temp:
+            snapshot = {'B': {'u': {'title': 'success'}}}
+            path = Path(temp, 'data_20261006_000000.json')
+            Path(temp, 'collection_status_20261006_000000.json').write_text(json.dumps({'A': 'timeout'}), encoding='utf-8')
+            self.assertIn('A:', snapshot_warnings(snapshot, path)[0])
+
     def test_body_noise_is_not_an_event_change(self):
         self.assertEqual({}, detect_changes(
             {'title': '행사', 'img': 'same', 'main_content': '3만원 지급'},
