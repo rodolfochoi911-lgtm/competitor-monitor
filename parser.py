@@ -18,7 +18,7 @@ parser.py
 
 import os
 from monitor_core import (detect_changes, calculate_notice_diff, validate_snapshot,
-                          collection_warnings, notice_lines)
+                          collection_warnings, notice_lines, comparison_snapshots, snapshot_warnings)
 import json
 import time
 import glob
@@ -304,6 +304,7 @@ _NOTICE_DEFAULT = {
 # =========================================================
 
 def calculate_changes(current_data: dict, prev_data: dict) -> tuple:
+    current_data, prev_data = comparison_snapshots(current_data, prev_data)
     changes = {}
     details = []
     for company in set(current_data.keys()) | set(prev_data.keys()):
@@ -385,7 +386,7 @@ def send_slack_report(total_change: int, event_details: list, notice_changes: di
                 for line in changes[key][:2]:
                     msg += f"\n  {label}: {line[:240]}"
     if warnings:
-        msg += f'\n\n⚠️ 수집 확인 필요 {len(warnings)}건 (이전 값 보존)'
+        msg += f'\n\n⚠️ 수집 확인 필요 {len(warnings)}건 (실패 회사 제외 / 일부 필드 이전 값 보존)'
         msg += '\n' + '\n'.join(warnings[:5])
     try:
         r = requests.post(slack_webhook_url, json={"text": msg}, timeout=10)
@@ -462,6 +463,8 @@ def run_parser():
             raw_prev = json.load(f)
 
     validate_snapshot(raw_curr, raw_prev)
+    warnings = snapshot_warnings(raw_curr, file_curr)
+    raw_curr, raw_prev = comparison_snapshots(raw_curr, raw_prev)
     print(f"📂 최신: {file_curr}")
     m = re.search(r'data_(\d{8})_(\d{6})\.json', file_curr)
     timestamp = (
@@ -521,7 +524,7 @@ def run_parser():
     # 이벤트 변경 + 유의사항 변경 분리 감지 → Slack
     total_chg, _, event_details = calculate_changes(raw_curr, raw_prev)
     notice_changes = calculate_notice_changes(raw_curr, raw_prev)
-    send_slack_report(total_chg, event_details, notice_changes, collection_warnings(raw_curr))
+    send_slack_report(total_chg, event_details, notice_changes, warnings)
 
 
 if __name__ == "__main__":

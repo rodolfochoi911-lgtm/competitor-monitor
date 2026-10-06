@@ -5,18 +5,21 @@
 
 import os
 import glob
-from monitor_core import validate_snapshot, preserve_unavailable_fields
+from monitor_core import preserve_unavailable_fields, prepare_partial_snapshot
 import json
 import time
 import re
+import traceback
 import requests
 import subprocess
 import pandas as pd
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit, parse_qs
 from bs4 import BeautifulSoup
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.common.exceptions import TimeoutException, UnexpectedAlertPresentException, NoAlertPresentException, ElementClickInterceptedException, StaleElementReferenceException
 
 from content_extractor import extract_page_content
 
@@ -140,6 +143,13 @@ def extract_list_with_thumbnails(
         time.sleep(2)
         soup = BeautifulSoup(driver.page_source, 'html.parser')
 
+        if site_name == 'SKT 다이렉트':
+            # 자동 할인 팝업/헤더/푸터의 링크를 이벤트로 수집하지 않는다.
+            area = soup.select_one('.event-list')
+            if area is None:
+                raise RuntimeError('T다이렉트 이벤트 목록 영역 없음')
+            soup = area
+
         if site_name == "SK 7세븐모바일":
             area = soup.select_one("#ct > section")
             if area:
@@ -219,6 +229,91 @@ def extract_list_with_thumbnails(
 # =========================================================
 # 상세 페이지 방문 + 동적 콘텐츠 추출
 # =========================================================
+def dismiss_tdirect_promotions(driver):
+    """Close only observed promotional overlays, never order/login controls."""
+    closed = 0
+    for selector in ('#trgtSupmOfferPop #offerPopClose', '#ofrMsgBox .js-modal-close'):
+        for button in driver.find_elements(By.CSS_SELECTOR, selector):
+            try:
+                if not button.is_displayed():
+                    continue
+                try:
+                    button.click()
+                except ElementClickInterceptedException:
+                    driver.execute_script('arguments[0].click();', button)
+                WebDriverWait(driver, 3).until(lambda d: not button.is_displayed())
+                closed += 1
+                print('   ℹ️ T다이렉트 자동 할인 팝업 닫기')
+            except StaleElementReferenceException:
+                # Closing an overlay may remove its DOM node entirely.
+                continue
+    return closed
+
+
+def open_tdirect_list(driver, url):
+    """Wait for actual event cards and dismiss delayed promotional overlays."""
+    for attempt in range(2):
+        try:
+            _dismiss_detail_alert(driver)
+            try:
+                driver.get(url)
+            except TimeoutException:
+                print('   ⚠️ T다이렉트 목록 로딩 시간 초과 — 이벤트 영역 확인')
+            def list_ready(d):
+                dismiss_tdirect_promotions(d)
+                return d.find_elements(By.CSS_SELECTOR, '.event-list .event-item a[href*="exhibitionId="]')
+            WebDriverWait(driver, 15).until(list_ready)
+            return
+        except (TimeoutException, UnexpectedAlertPresentException) as e:
+            _dismiss_detail_alert(driver)
+            if attempt == 1:
+                raise RuntimeError(f'T다이렉트 목록 준비 실패: {url} [{type(e).__name__}: {e}]') from e
+
+
+def _dismiss_detail_alert(driver):
+    try:
+        alert = driver.switch_to.alert
+        print(f'   ⚠️ 상세 이동을 막는 확인창 닫기: {alert.text[:200]}')
+        alert.dismiss()
+    except NoAlertPresentException:
+        pass
+
+
+def open_detail_page(driver, url, site_name):
+    if site_name != 'SKT 다이렉트':
+        driver.get(url)
+        return
+    # /nf/는 빈 본문의 대기열 페이지다. 정상 상세 화면으로 전환되기 전에는
+    # 수집 성공으로 취급하지 않고, 일시적인 alert/로딩 실패는 한 번 재시도한다.
+    for attempt in range(2):
+        try:
+            _dismiss_detail_alert(driver)
+            dismiss_tdirect_promotions(driver)
+            try:
+                driver.get(url)
+            except TimeoutException:
+                # 일부 리소스가 느려도 본문이 이미 준비됐다면 수집을 계속한다.
+                print(f'   ⚠️ T다이렉트 페이지 이동 시간 초과: {url} — 본문 준비 확인')
+            def detail_ready(d):
+                if '/nf/' in d.current_url:
+                    return False
+                if '/nf/index_nf_yp_plan.html' in url:
+                    location = urlsplit(d.current_url)
+                    if location.hostname != 'shop.tworld.co.kr' or location.path != '/exhibition/view':
+                        return False
+                    if parse_qs(location.query).get('exhibitionId') != parse_qs(urlsplit(url).query).get('exhibitionId'):
+                        return False
+                return d.execute_script("return !!document.body && document.body.innerText.trim().length > 50")
+            WebDriverWait(driver, 15).until(detail_ready)
+            dismiss_tdirect_promotions(driver)
+            return
+        except (TimeoutException, UnexpectedAlertPresentException) as e:
+            print(f'   ⚠️ T다이렉트 상세 재시도 {attempt + 1}/2 [{type(e).__name__}: {e}]')
+            _dismiss_detail_alert(driver)
+            if attempt == 1:
+                raise RuntimeError(f'T다이렉트 상세 로딩 실패: {url} [{type(e).__name__}: {e}]') from e
+
+
 def visit_detail_pages(driver, targets: dict, site_name: str) -> dict:
     final_data = {}
 
@@ -233,7 +328,7 @@ def visit_detail_pages(driver, targets: dict, site_name: str) -> dict:
 
     for url, info in targets.items():
         try:
-            driver.get(url)
+            open_detail_page(driver, url, site_name)
 
             content_data = extract_page_content(driver, url)
 
@@ -283,7 +378,7 @@ def visit_detail_pages(driver, targets: dict, site_name: str) -> dict:
             print(f"   ✓ [{site_name}] {title[:30]} | 본문 {len(content_data['main_content'])}자 | 유의사항 {len(content_data['notice'])}자")
 
         except Exception as e:
-            raise RuntimeError(f"상세 수집 실패: {url}") from e
+            raise RuntimeError(f"상세 수집 실패: {url} [{type(e).__name__}: {e}]") from e
 
     return final_data
 
@@ -518,7 +613,10 @@ def crawl_site_logic(driver, comp: dict) -> dict:
             t_url = comp['url']
 
         try:
-            driver.get(t_url)
+            if comp['name'] == 'SKT 다이렉트':
+                open_tdirect_list(driver, t_url)
+            else:
+                driver.get(t_url)
         except Exception as e:
             raise RuntimeError(f"목록 페이지 로드 실패: {comp['name']} p{page}") from e
 
@@ -554,6 +652,7 @@ def main():
     ]
 
     results = {}
+    errors = {}
     driver = None
     start_time = time.time()
 
@@ -566,20 +665,23 @@ def main():
         for comp in competitors:
             comp_start = time.time()
             try:
+                if driver is None:
+                    driver = setup_driver()
                 data = crawl_site_logic(driver, comp)
+                if not data:
+                    raise RuntimeError('수집 결과 0건')
                 results[comp['name']] = data
                 elapsed = time.time() - comp_start
                 print(f"✅ {comp['name']} 완료 ({len(data)}건, {elapsed:.0f}초)")
             except Exception as e:
+                errors[comp['name']] = f'{type(e).__name__}: {e}'
+                traceback.print_exc()
                 print(f"⚠️ {comp['name']} 에러, 드라이버 재시작... [{type(e).__name__}: {e}]")
                 try:
                     driver.quit()
                 except Exception:
                     pass
-                try:
-                    driver = setup_driver()
-                except Exception as de:
-                    print(f"❌ 드라이버 재시작 실패: {de}")
+                driver = None
                 results[comp['name']] = {}
 
     except Exception as e:
@@ -596,18 +698,28 @@ def main():
     if previous_files:
         with open(previous_files[-1], encoding='utf-8') as f:
             previous = json.load(f)
-    expected = {comp['name'] for comp in competitors}
-    if set(results) != expected:
-        raise RuntimeError('일부 회사 수집 실패: 이전 정상 데이터를 유지합니다.')
-    validate_snapshot(results, previous)
+    for comp in competitors:
+        if not results.get(comp['name']):
+            errors.setdefault(comp['name'], '수집 결과 없음')
+    successful_count = sum(len(events) for company, events in results.items() if company not in errors)
+    results = prepare_partial_snapshot(results, previous, errors)
     warnings = preserve_unavailable_fields(results, previous, os.path.basename(previous_files[-1]) if previous_files else '')
     for warning in warnings:
         print(f'⚠️ {warning}')
     output_path = os.path.join(DATA_DIR, f"data_{FILE_TIMESTAMP}.json")
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
+    status_path = os.path.join(DATA_DIR, f"collection_status_{FILE_TIMESTAMP}.json")
+    with open(status_path, 'w', encoding='utf-8') as f:
+        json.dump(errors, f, ensure_ascii=False, indent=2)
+    if errors:
+        summary = '일부 수집 실패 — 성공한 회사 결과는 저장합니다. 제외: ' + ', '.join(errors)
+        print(f'::warning::{summary}')
+        if os.environ.get('GITHUB_STEP_SUMMARY'):
+            with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as f:
+                f.write('\n### 일부 수집 실패\n\n' + summary + '\n')
 
-    total_count = sum(len(v) for v in results.values())
+    total_count = successful_count
     elapsed_total = time.time() - start_time
 
     print(f"\n{'='*60}")

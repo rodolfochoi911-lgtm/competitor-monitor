@@ -1,4 +1,4 @@
-from monitor_core import detect_changes, calculate_notice_diff, collection_warnings
+from monitor_core import detect_changes, calculate_notice_diff, snapshot_warnings, comparison_snapshots
 import streamlit as st
 import glob
 import os
@@ -155,7 +155,7 @@ if date1_info.get('datetime') and date2_info.get('datetime'):
 
 data_today, data_yesterday = load_data_by_file(date1_info['file'], date2_info['file'])
 if data_today:
-    for warning in collection_warnings(data_today):
+    for warning in snapshot_warnings(data_today, date1_info['file']):
         st.warning(warning)
 if not data_today or not data_yesterday:
     st.error("❌ 데이터를 불러올 수 없습니다.")
@@ -164,6 +164,7 @@ if not data_today or not data_yesterday:
 # =========================================================
 # 이벤트 변경 데이터 수집
 # =========================================================
+data_today, data_yesterday = comparison_snapshots(data_today, data_yesterday)
 all_companies = sorted(set(data_today) | set(data_yesterday))
 company_data = {}
 

@@ -1,6 +1,6 @@
 """프로모션 목록과 본문·유의사항 변경을 확인하는 대시보드."""
 
-from monitor_core import detect_changes, calculate_notice_diff, collection_warnings
+from monitor_core import detect_changes, calculate_notice_diff, snapshot_warnings, comparison_snapshots
 import streamlit as st
 import pandas as pd
 import altair as alt
@@ -37,6 +37,7 @@ def calculate_changes(json_mtime: float) -> dict:
         curr = json.load(f)
     with open(json_files[1], 'r', encoding='utf-8') as f:
         prev = json.load(f)
+    curr, prev = comparison_snapshots(curr, prev)
     changes = {}
     notices = calculate_notice_diff(curr, prev)
     for company in set(curr) | set(prev):
@@ -63,10 +64,10 @@ json_files = sorted(glob.glob("data/data_*.json"), reverse=True)
 changes = calculate_changes(get_mtime(json_files[0]) if json_files else 0)
 if json_files:
     with open(json_files[0], encoding='utf-8') as snapshot_file:
-        warnings = collection_warnings(json.load(snapshot_file))
+        warnings = snapshot_warnings(json.load(snapshot_file), json_files[0])
     if warnings:
-        st.warning(f'수집 확인 필요 {len(warnings)}건: 일부 본문·유의사항은 이전 수집값입니다.')
-        with st.expander('이전 값을 보존한 항목'):
+        st.warning(f'수집 확인 필요 {len(warnings)}건: 실패 회사는 이번 결과에서 제외하며 일부 필드는 이전 수집값입니다.')
+        with st.expander('수집 제외 및 이전 값 보존 항목'):
             for warning in warnings:
                 st.write(warning)
 
