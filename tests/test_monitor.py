@@ -230,7 +230,7 @@ class PromotionRegressionTests(unittest.TestCase):
         with patch.object(parser, 'slack_webhook_url', 'https://example.invalid'), patch.object(parser.requests, 'post') as post:
             parser.send_slack_report(count, details, {})
             text = post.call_args.kwargs['json']['text']
-            self.assertIn('상세 이미지 1개', text)
+            self.assertIn('이미지)', text)
             self.assertIn('https://example.com/event', text)
 
     def test_identical_notice_keeps_both_event_sources(self):
@@ -260,7 +260,48 @@ class PromotionRegressionTests(unittest.TestCase):
             parser.send_slack_report(0, [], {'A': {'added': ['3만원 → 5만원'], 'removed': []}})
             text = post.call_args.kwargs['json']['text']
             self.assertNotIn('특이사항 없음', text)
-            self.assertIn('3만원 → 5만원', text)
+            self.assertIn('혜택·조건 변경', text)
+            self.assertNotIn('3만원 → 5만원', text)
+
+    def test_slack_report_shows_period_dates_without_full_notice_sentences(self):
+        url = 'https://www.sk7mobile.com/bnef/event/eventIngView.do?cntId=abc'
+        old = {'SK 7세븐모바일': {url: {'title': '가입 혜택', 'notice': '혜택 신청기간은 2026년 10월 31일까지입니다.'}}}
+        new = {'SK 7세븐모바일': {url: {'title': '가입 혜택', 'notice': '혜택 신청기간은 2026년 11월 30일까지입니다.'}}}
+        diff = calculate_notice_diff(new, old)
+        text = parser.format_slack_report(0, [], diff)
+        self.assertIn('기간 2026년10월31일→2026년11월30일', text)
+        self.assertIn(f'<{url}|보기>', text)
+        self.assertNotIn('혜택 신청기간은', text)
+
+    def test_slack_report_remains_short_with_many_long_changes(self):
+        event_details = [
+            f'• 통신사{i}: 수정 99 | 요약 <https://example.com/{i}|보기>'
+            for i in range(9)
+        ]
+        notice_changes = {
+            f'통신사{i}': {
+                'added': [f'기간 관련 공지 {j} 변경 - ' + '아주 긴 설명' * 90
+                          for j in range(8)],
+                'removed': [f'이전 공지 {j} - ' + '이전 설명' * 90
+                            for j in range(8)],
+            }
+            for i in range(9)
+        }
+        text = parser.format_slack_report(
+            891, event_details, notice_changes,
+            warnings=['https://example.com/image/' + '경고' * 120] * 12
+        )
+        self.assertLess(len(text), 950)
+        self.assertIn('외 5개 회사', text)
+        self.assertIn('외 6개 회사 유의사항', text)
+        self.assertIn('수집 점검 12건', text)
+        self.assertNotIn('아주 긴 설명', text)
+        self.assertNotIn('경고경고', text)
+
+    def test_slack_report_no_change_is_single_short_status(self):
+        text = parser.format_slack_report(0, [], {})
+        self.assertIn('특이사항 없음', text)
+        self.assertLess(len(text), 220)
 
     def test_empty_company_is_rejected(self):
         with self.assertRaises(RuntimeError):
