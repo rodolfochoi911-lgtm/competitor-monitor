@@ -170,6 +170,8 @@ def collection_warnings(data):
             if retained:
                 fields = ', '.join(labels.get(field, field) for field in retained)
                 warnings.append(f"{company} / {event.get('title', url)}: {fields} 재확인 필요, 이전 수집값 보존 ({url})")
+            if event.get('_image_collection_error') and 'detail_image_hashes' not in retained:
+                warnings.append(f"{company} / {event.get('title', url)}: 상세 이미지 수집 확인 필요 ({url})")
     return warnings
 
 
