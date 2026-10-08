@@ -187,10 +187,16 @@ class PromotionRegressionTests(unittest.TestCase):
             Path(temp, 'collection_status_20261006_000000.json').write_text(json.dumps({'A': 'timeout'}), encoding='utf-8')
             self.assertIn('A:', snapshot_warnings(snapshot, path)[0])
 
-    def test_body_noise_is_not_an_event_change(self):
-        self.assertEqual({}, detect_changes(
+    def test_body_benefit_change_is_an_event_change(self):
+        delta = detect_changes(
             {'title': '행사', 'img': 'same', 'main_content': '3만원 지급'},
-            {'title': '행사', 'img': 'same', 'main_content': '5만원 지급'}))
+            {'title': '행사', 'img': 'same', 'main_content': '5만원 지급'})
+        self.assertIn('main_content', delta)
+
+    def test_body_noise_only_is_not_an_event_change(self):
+        self.assertEqual({}, detect_changes(
+            {'title': '행사', 'main_content': '혜택 유지\\n조회수 123\\n검색일 2026-10-07'},
+            {'title': '행사', 'main_content': '혜택 유지\\n조회수 456\\n검색일 2026-10-08'}))
 
     def test_formatting_only_body_change_is_ignored(self):
         self.assertEqual({}, detect_changes({'main_content': '<p>3만원 지급</p>'},
@@ -198,7 +204,34 @@ class PromotionRegressionTests(unittest.TestCase):
 
     def test_amount_and_date_variants_are_preserved(self):
         items = {'url1': {'title': '행사', 'notice': '가입 고객에게 상품권 30,000원을 지급합니다.\n가입 고객에게 상품권 50,000원을 지급합니다.\n2026년 9월 10일까지 가입한 고객에게 지급합니다.\n2026년 9월 20일까지 가입한 고객에게 지급합니다.'}}
-        self.assertEqual(2, len(parser.collect_unique_notices(items)))
+        self.assertEqual(4, len(parser.collect_unique_notices(items)))
+
+    def test_period_only_notice_edit_is_detected_with_source(self):
+        url = 'https://www.sk7mobile.com/bnef/event/eventIngView.do?cntId=abc'
+        old = {'SK 7세븐모바일': {url: {'title': '가입 혜택', 'notice': '혜택 신청기간은 2026년 10월 31일까지입니다.'}}}
+        new = {'SK 7세븐모바일': {url: {'title': '가입 혜택', 'notice': '혜택 신청기간은 2026년 11월 30일까지입니다.'}}}
+        diff = calculate_notice_diff(new, old)['SK 7세븐모바일']
+        self.assertEqual(['혜택 신청기간은 2026년 11월 30일까지입니다.'], diff['added'])
+        self.assertEqual(['혜택 신청기간은 2026년 10월 31일까지입니다.'], diff['removed'])
+        self.assertEqual(url, diff['added_sources'][diff['added'][0]]['url'])
+
+    def test_image_hash_baseline_and_same_url_replacement(self):
+        base = {'title': '행사', 'img': '/thumbnail.png', 'main_content': '동일'}
+        after = dict(base, detail_image_hashes=['new_hash'])
+        self.assertEqual({}, detect_changes(base, after))
+        changed = detect_changes(dict(base, detail_image_hashes=['old_hash']), after)
+        self.assertIn('detail_image_hashes', changed)
+
+    def test_slack_push_includes_image_event_url(self):
+        old = {'A': {'https://example.com/event': {'title': '행사', 'detail_image_hashes': ['a']}}}
+        new = {'A': {'https://example.com/event': {'title': '행사', 'detail_image_hashes': ['b']}}}
+        count, _, details = parser.calculate_changes(new, old)
+        self.assertEqual(1, count)
+        with patch.object(parser, 'slack_webhook_url', 'https://example.invalid'), patch.object(parser.requests, 'post') as post:
+            parser.send_slack_report(count, details, {})
+            text = post.call_args.kwargs['json']['text']
+            self.assertIn('상세 이미지 1개', text)
+            self.assertIn('https://example.com/event', text)
 
     def test_identical_notice_keeps_both_event_sources(self):
         text = '가입 고객에게 상품권 30,000원을 지급합니다.'
