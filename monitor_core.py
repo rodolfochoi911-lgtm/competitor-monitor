@@ -13,14 +13,41 @@ def clean_text(value):
     return re.sub(r'\s+', ' ', soup.get_text(' ', strip=True)).strip()
 
 
+BODY_NOISE_RE = re.compile(
+    r'^(?:조회\s*수\s*[:：]?\s*\d+|'
+    r'(?:검색일|수집일|크롤링\s*시각|최종\s*수정일)\s*[:：]?.*)$',
+    re.IGNORECASE,
+)
+
+
+def normalized_body(value):
+    soup = BeautifulSoup(value or '', 'html.parser')
+    for tag in soup(['script', 'style', 'noscript']):
+        tag.decompose()
+    lines = [re.sub(r'\s+', ' ', line).strip()
+             for line in soup.get_text('\n', strip=True).splitlines()]
+    return ' '.join(line for line in lines if line and not BODY_NOISE_RE.match(line))
+
+
 def detect_changes(old, new):
     changes = {}
-    # 본문에는 조회수, 검색일 등 수집 때마다 달라지는 값이 섞인다.
-    # 행사 자체의 수정 판정은 안정적인 제목과 이미지만 사용한다.
-    for field in ('title', 'img'):
+    for field in ('title', 'img', 'main_content'):
         before, after = old.get(field, '') or '', new.get(field, '') or ''
-        if (before != after if field == 'img' else clean_text(before) != clean_text(after)):
+        if field == 'img':
+            changed = before != after
+        elif field == 'main_content':
+            # Avoid alerting on a temporary empty extraction.
+            changed = bool(before and after) and normalized_body(before) != normalized_body(after)
+        else:
+            changed = clean_text(before) != clean_text(after)
+        if changed:
             changes[field] = {'old': before, 'new': after}
+
+    # Establish baseline on first deployment, rather than alerting for every old event.
+    before_images = old.get('detail_image_hashes')
+    after_images = new.get('detail_image_hashes')
+    if before_images is not None and after_images is not None and before_images != after_images:
+        changes['detail_image_hashes'] = {'old': before_images, 'new': after_images}
     return changes
 
 
@@ -35,8 +62,21 @@ PERCENT_BENEFIT_RE = re.compile(
 )
 
 
+PERIOD_NOTICE_RE = re.compile(
+    r'20\d{2}\s*(?:[./-]|년)\s*\d{1,2}|'
+    r'\d{1,2}\s*월\s*\d{1,2}\s*일|'
+    r'\d{1,2}\s*[./-]\s*\d{1,2}|'
+    r'\d+\s*(?:영업일|개월|달|주|일|시간)\s*(?:간|이내|전|후|동안)?|'
+    r'기간|기한|선정일|발송일|지급일|사용일|적용일|신청일|종료일'
+)
+NOTICE_NOISE_RE = re.compile(
+    r'^(?:조회\s*수|검색일|수집일|크롤링\s*시각|최종\s*수정일)',
+    re.IGNORECASE,
+)
+
+
 def notice_lines(value):
-    """금액 혜택과 조건에 관계된 유의사항만 반환한다."""
+    """금액/혜택 및 날짜·기간·기한 관련 유의사항을 반환한다."""
     soup = BeautifulSoup(value or '', 'html.parser')
     for tag in soup(['script', 'style', 'noscript']):
         tag.decompose()
@@ -44,9 +84,10 @@ def notice_lines(value):
     lines = set()
     for raw_line in soup.get_text('\n', strip=True).splitlines():
         line = re.sub(r'\s+', ' ', raw_line).strip()
-        if not line or line in footer:
+        if not line or line in footer or NOTICE_NOISE_RE.search(line):
             continue
-        if AMOUNT_NOTICE_RE.search(line) or PERCENT_BENEFIT_RE.search(line):
+        if (AMOUNT_NOTICE_RE.search(line) or PERCENT_BENEFIT_RE.search(line)
+                or PERIOD_NOTICE_RE.search(line)):
             lines.add(line)
     return lines
 
@@ -94,8 +135,12 @@ def preserve_unavailable_fields(current, previous, previous_snapshot=''):
         for url, event in events.items():
             old = previous.get(company, {}).get(url, {})
             retained = {}
-            for field in ('main_content', 'notice'):
-                if clean_text(old.get(field)) and not clean_text(event.get(field)):
+            for field in ('main_content', 'notice', 'detail_image_hashes'):
+                if field == 'detail_image_hashes':
+                    missing = old.get(field) is not None and event.get(field) is None
+                else:
+                    missing = bool(clean_text(old.get(field))) and not clean_text(event.get(field))
+                if missing:
                     event[field] = old[field]
                     retained[field] = old.get('_retained_fields', {}).get(field) or previous_snapshot
             if retained:
@@ -105,7 +150,7 @@ def preserve_unavailable_fields(current, previous, previous_snapshot=''):
 
 
 def collection_warnings(data):
-    labels = {'main_content': '본문', 'notice': '유의사항'}
+    labels = {'main_content': '본문', 'notice': '유의사항', 'detail_image_hashes': '상세 이미지'}
     warnings = []
     for company, events in sorted(data.items()):
         if any(event.get('_collection_error') for event in events.values()):
