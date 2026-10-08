@@ -92,25 +92,34 @@ def notice_lines(value):
     return lines
 
 
+def company_notice_sources(data, company):
+    """Keep original event URL/title for Slack while deduplicating company-wide."""
+    sources = {}
+    for url, event in data.get(company, {}).items():
+        for line in notice_lines(event.get('notice')):
+            sources.setdefault(line, {'url': url, 'title': event.get('title', '')})
+    return sources
+
+
 def company_notice_lines(data, company):
-    """이벤트 경계를 없애고 회사별 금액 유의사항을 하나로 합친다."""
-    result = set()
-    for event in data.get(company, {}).values():
-        result.update(notice_lines(event.get('notice')))
-    return result
+    return set(company_notice_sources(data, company))
 
 
 def calculate_notice_diff(current, previous):
     current, previous = comparison_snapshots(current, previous)
     result = {}
     for company in sorted(set(current) | set(previous)):
-        before = company_notice_lines(previous, company)
-        after = company_notice_lines(current, company)
-        added = sorted(after - before)
-        removed = sorted(before - after)
+        before_sources = company_notice_sources(previous, company)
+        after_sources = company_notice_sources(current, company)
+        added = sorted(after_sources.keys() - before_sources.keys())
+        removed = sorted(before_sources.keys() - after_sources.keys())
         if added or removed:
-            result[company] = {'added': added, 'removed': removed,
-                               'total': len(added) + len(removed)}
+            result[company] = {
+                'added': added, 'removed': removed,
+                'total': len(added) + len(removed),
+                'added_sources': {line: after_sources[line] for line in added},
+                'removed_sources': {line: before_sources[line] for line in removed},
+            }
     return result
 
 
