@@ -195,8 +195,8 @@ class PromotionRegressionTests(unittest.TestCase):
 
     def test_body_noise_only_is_not_an_event_change(self):
         self.assertEqual({}, detect_changes(
-            {'title': '행사', 'main_content': '혜택 유지\\n조회수 123\\n검색일 2026-10-07'},
-            {'title': '행사', 'main_content': '혜택 유지\\n조회수 456\\n검색일 2026-10-08'}))
+            {'title': '행사', 'main_content': '혜택 유지\n조회수 123\n검색일 2026-10-07'},
+            {'title': '행사', 'main_content': '혜택 유지\n조회수 456\n검색일 2026-10-08'}))
 
     def test_formatting_only_body_change_is_ignored(self):
         self.assertEqual({}, detect_changes({'main_content': '<p>3만원 지급</p>'},
