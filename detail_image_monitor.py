@@ -69,7 +69,7 @@ def extract_detail_image_urls(page_source, page_url):
                 srcset = tag.get("data-srcset") or tag.get("srcset") or ""
                 if srcset:
                     add(srcset.split(",")[0].strip().split()[0])
-        style = tag.get("style", "")
+        style = tag.get("style") or ""
         for match in BACKGROUND_URL.finditer(style):
             add(match.group(1))
         if len(urls) >= MAX_IMAGES:
@@ -77,12 +77,19 @@ def extract_detail_image_urls(page_source, page_url):
     return urls
 
 
-def hash_detail_images(page_source, page_url, session=requests):
+def hash_detail_images(page_source, page_url, session=requests, cache=None):
     """Return (SHA-256 hashes, warning). Incomplete fetches never form a baseline."""
     urls = extract_detail_image_urls(page_source, page_url)
     digests = []
     failures = []
+    cache = cache if cache is not None else {}
     for url in urls:
+        if url in cache:
+            if cache[url] is None:
+                failures.append(url)
+                break
+            digests.append(cache[url])
+            continue
         response = None
         try:
             response = session.get(
@@ -109,9 +116,13 @@ def hash_detail_images(page_source, page_url, session=requests):
                 digest.update(chunk)
             if not total:
                 raise ValueError("empty image")
-            digests.append(digest.hexdigest())
+            hexdigest = digest.hexdigest()
+            cache[url] = hexdigest
+            digests.append(hexdigest)
         except (requests.RequestException, ValueError) as exc:
+            cache[url] = None
             failures.append(f"{url}: {type(exc).__name__}")
+            break
         finally:
             if response is not None:
                 response.close()
