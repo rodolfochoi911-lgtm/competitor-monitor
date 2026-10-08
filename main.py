@@ -6,6 +6,7 @@
 import os
 import glob
 from monitor_core import preserve_unavailable_fields, prepare_partial_snapshot
+from detail_image_monitor import hash_detail_images
 import json
 import time
 import re
@@ -374,6 +375,15 @@ def visit_detail_pages(driver, targets: dict, site_name: str) -> dict:
                 "notice":       content_data["notice"],
                 "full_text":    content_data["full_text"],
             }
+
+            # Read the actual detail images, not just the list thumbnail URL.
+            # SK7 is scoped first to avoid slowing down other competitors.
+            if site_name == "SK 7세븐모바일":
+                image_hashes, image_warning = hash_detail_images(driver.page_source, url)
+                if image_warning:
+                    print(f"   ⚠️ [SK7 상세 이미지] {title[:30]}: {image_warning}")
+                else:
+                    final_data[url]["detail_image_hashes"] = image_hashes
 
             print(f"   ✓ [{site_name}] {title[:30]} | 본문 {len(content_data['main_content'])}자 | 유의사항 {len(content_data['notice'])}자")
 
