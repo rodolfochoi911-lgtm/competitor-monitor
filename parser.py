@@ -201,7 +201,7 @@ def split_into_notice_items(text: str) -> list:
     def flush():
         if current:
             merged = ' '.join(current)
-            if len(merged) >= 15:
+            if len(merged) >= 15 or re.search(r'20\d{2}\s*(?:[./-]|년)\s*\d{1,2}\s*(?:[./-]|월)\s*\d{1,2}', merged):
                 items.append(merged)
             current.clear()
 
