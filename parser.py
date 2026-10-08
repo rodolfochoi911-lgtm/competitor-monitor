@@ -450,7 +450,7 @@ def format_slack_report(total_change, event_details, notice_changes, warnings=No
             lines.append(f'  외 {len(notice_changes) - SLACK_NOTICE_LIMIT}개 회사 유의사항')
         if warnings:
             lines.append(
-                f'⚠️ 수집 점검 {len(warnings)}건 '
+                f'⚠️ 수집 확인 필요 {len(warnings)}건 '
                 '<https://github.com/rodolfochoi911-lgtm/competitor-monitor/actions|로그>'
             )
 
