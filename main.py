@@ -327,6 +327,7 @@ def visit_detail_pages(driver, targets: dict, site_name: str) -> dict:
     bad_list = SK7_BAD_TITLES if site_name == "SK 7세븐모바일" else BAD_TITLES
     selectors = title_selectors_sk7 if site_name == "SK 7세븐모바일" else title_selectors_common
 
+    image_cache = {}  # Shared resources are downloaded once per SK7 crawl.
     for url, info in targets.items():
         try:
             open_detail_page(driver, url, site_name)
@@ -379,8 +380,9 @@ def visit_detail_pages(driver, targets: dict, site_name: str) -> dict:
             # Read the actual detail images, not just the list thumbnail URL.
             # SK7 is scoped first to avoid slowing down other competitors.
             if site_name == "SK 7세븐모바일":
-                image_hashes, image_warning = hash_detail_images(driver.page_source, url)
+                image_hashes, image_warning = hash_detail_images(driver.page_source, url, cache=image_cache)
                 if image_warning:
+                    final_data[url]["_image_collection_error"] = image_warning
                     print(f"   ⚠️ [SK7 상세 이미지] {title[:30]}: {image_warning}")
                 else:
                     final_data[url]["detail_image_hashes"] = image_hashes
