@@ -307,24 +307,40 @@ def calculate_changes(current_data: dict, prev_data: dict) -> tuple:
     current_data, prev_data = comparison_snapshots(current_data, prev_data)
     changes = {}
     details = []
-    for company in set(current_data.keys()) | set(prev_data.keys()):
+    for company in sorted(set(current_data.keys()) | set(prev_data.keys())):
         curr = current_data.get(company, {})
         prev = prev_data.get(company, {})
         curr_urls, prev_urls = set(curr.keys()), set(prev.keys())
         new_cnt = len(curr_urls - prev_urls)
         end_cnt = len(prev_urls - curr_urls)
-        mod_cnt = sum(
-            1 for url in curr_urls & prev_urls
-            if detect_changes(prev[url], curr[url])
-        )
+        modified = [(url, detect_changes(prev[url], curr[url]))
+                    for url in sorted(curr_urls & prev_urls)]
+        modified = [(url, delta) for url, delta in modified if delta]
+        mod_cnt = len(modified)
         total = new_cnt + end_cnt + mod_cnt
-        if total > 0:
+        if total:
             changes[company] = total
             parts = []
             if new_cnt: parts.append(f"신규 {new_cnt}건")
             if end_cnt: parts.append(f"종료 {end_cnt}건")
             if mod_cnt: parts.append(f"수정 {mod_cnt}건")
             details.append(f"• {company} 총 {total}건 ({', '.join(parts)})")
+            for url, delta in modified[:5]:
+                labels = []
+                if 'main_content' in delta:
+                    labels.append('본문')
+                if 'detail_image_hashes' in delta:
+                    before = delta['detail_image_hashes']['old']
+                    after = delta['detail_image_hashes']['new']
+                    count = sum(i >= len(before) or i >= len(after) or before[i] != after[i]
+                                for i in range(max(len(before), len(after))))
+                    labels.append(f'상세 이미지 {count}개')
+                if 'title' in delta:
+                    labels.append('제목')
+                if 'img' in delta:
+                    labels.append('썸네일')
+                title = (curr[url].get('title') or prev[url].get('title') or '이벤트')[:70]
+                details.append(f"  - {title} ({', '.join(labels)})\n    {url}")
     return sum(changes.values()), changes, details
 
 
@@ -385,6 +401,9 @@ def send_slack_report(total_change: int, event_details: list, notice_changes: di
             for label, key in [('추가', 'added'), ('삭제', 'removed')]:
                 for line in changes[key][:2]:
                     msg += f"\n  {label}: {line[:240]}"
+                    source = changes.get(f'{key}_sources', {}).get(line, {})
+                    if source.get('url'):
+                        msg += f"\n    {source['title'][:65]}: {source['url']}"
     if warnings:
         msg += f'\n\n⚠️ 수집 확인 필요 {len(warnings)}건 (실패 회사 제외 / 일부 필드 이전 값 보존)'
         msg += '\n' + '\n'.join(warnings[:5])
