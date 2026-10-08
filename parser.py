@@ -304,43 +304,42 @@ _NOTICE_DEFAULT = {
 # =========================================================
 
 def calculate_changes(current_data: dict, prev_data: dict) -> tuple:
+    """Compact company-level event summary; preserve all per-event comparisons."""
     current_data, prev_data = comparison_snapshots(current_data, prev_data)
-    changes = {}
-    details = []
-    for company in sorted(set(current_data.keys()) | set(prev_data.keys())):
-        curr = current_data.get(company, {})
-        prev = prev_data.get(company, {})
-        curr_urls, prev_urls = set(curr.keys()), set(prev.keys())
-        new_cnt = len(curr_urls - prev_urls)
-        end_cnt = len(prev_urls - curr_urls)
+    changes, details = {}, []
+    for company in sorted(set(current_data) | set(prev_data)):
+        curr, prev = current_data.get(company, {}), prev_data.get(company, {})
+        curr_urls, prev_urls = set(curr), set(prev)
+        added_urls, removed_urls = sorted(curr_urls - prev_urls), sorted(prev_urls - curr_urls)
         modified = [(url, detect_changes(prev[url], curr[url]))
                     for url in sorted(curr_urls & prev_urls)]
         modified = [(url, delta) for url, delta in modified if delta]
-        mod_cnt = len(modified)
-        total = new_cnt + end_cnt + mod_cnt
-        if total:
-            changes[company] = total
-            parts = []
-            if new_cnt: parts.append(f"신규 {new_cnt}건")
-            if end_cnt: parts.append(f"종료 {end_cnt}건")
-            if mod_cnt: parts.append(f"수정 {mod_cnt}건")
-            details.append(f"• {company} 총 {total}건 ({', '.join(parts)})")
-            for url, delta in modified[:5]:
-                labels = []
-                if 'main_content' in delta:
-                    labels.append('본문')
-                if 'detail_image_hashes' in delta:
-                    before = delta['detail_image_hashes']['old']
-                    after = delta['detail_image_hashes']['new']
-                    count = sum(i >= len(before) or i >= len(after) or before[i] != after[i]
-                                for i in range(max(len(before), len(after))))
-                    labels.append(f'상세 이미지 {count}개')
-                if 'title' in delta:
-                    labels.append('제목')
-                if 'img' in delta:
-                    labels.append('썸네일')
-                title = (curr[url].get('title') or prev[url].get('title') or '이벤트')[:70]
-                details.append(f"  - {title} ({', '.join(labels)})\n    {url}")
+        total = len(added_urls) + len(removed_urls) + len(modified)
+        if not total:
+            continue
+
+        changes[company] = total
+        parts = []
+        if added_urls:
+            parts.append(f"신규 {len(added_urls)}")
+        if removed_urls:
+            parts.append(f"종료 {len(removed_urls)}")
+        if modified:
+            parts.append(f"수정 {len(modified)}")
+        summary = f"• {company}: {'·'.join(parts)}"
+
+        # Show only one representative link, never a URL dump.
+        if modified:
+            url, delta = modified[0]
+            labels = {'main_content': '본문', 'detail_image_hashes': '이미지',
+                      'title': '제목', 'img': '썸네일'}
+            kinds = '·'.join(labels[k] for k in labels if k in delta)
+            title = re.sub(r'\s+', ' ', curr[url].get('title') or '이벤트')[:24]
+            summary += f" | {title}({kinds}) <{url}|보기>"
+        elif added_urls:
+            summary += f" <{added_urls[0]}|보기>"
+        details.append(summary)
+
     return sum(changes.values()), changes, details
 
 
@@ -376,43 +375,100 @@ def calculate_notice_changes(curr_data: dict, prev_data: dict) -> dict:
 # Slack
 # =========================================================
 
+SLACK_COMPANY_LIMIT = 4
+SLACK_NOTICE_LIMIT = 3
+NOTICE_DATE_TOKEN_RE = re.compile(
+    r'20\d{2}\s*년\s*\d{1,2}\s*월\s*\d{1,2}\s*일|'
+    r'20\d{2}[./-]\d{1,2}[./-]\d{1,2}|'
+    r'\d{1,2}\s*월\s*\d{1,2}\s*일|'
+    r'\d{1,2}\s*[./-]\s*\d{1,2}'
+)
+PERIOD_HINT_RE = re.compile(r'기간|기한|까지|부터|종료|시작|지급일|발송일|선정일|사용일|신청일')
+
+
+def _short_notice_change(changes):
+    """A date-only edit becomes a compact old→new summary."""
+    added, removed = changes.get('added', []), changes.get('removed', [])
+    old_sources = changes.get('removed_sources', {})
+    new_sources = changes.get('added_sources', {})
+    for new_line in added[:10]:
+        new_tokens = NOTICE_DATE_TOKEN_RE.findall(new_line)
+        if not new_tokens or not PERIOD_HINT_RE.search(new_line):
+            continue
+        for old_line in removed[:10]:
+            old_tokens = NOTICE_DATE_TOKEN_RE.findall(old_line)
+            if not old_tokens or not PERIOD_HINT_RE.search(old_line):
+                continue
+            old_url = old_sources.get(old_line, {}).get('url')
+            new_url = new_sources.get(new_line, {}).get('url')
+            if old_url and new_url and old_url != new_url:
+                continue
+            before = NOTICE_DATE_TOKEN_RE.sub('{date}', old_line)
+            after = NOTICE_DATE_TOKEN_RE.sub('{date}', new_line)
+            if before != after or old_tokens == new_tokens:
+                continue
+            pair = next(((a, b) for a, b in zip(old_tokens, new_tokens) if a != b), None)
+            if pair:
+                return '기간 ' + re.sub(r'\s+', '', pair[0])[:18] + '→' + re.sub(r'\s+', '', pair[1])[:18]
+    if any(PERIOD_HINT_RE.search(line) for line in added + removed):
+        return '기간·조건 변경'
+    return '혜택·조건 변경'
+
+
+def _notice_source_link(changes):
+    for key in ('added', 'removed'):
+        for line in changes.get(key, []):
+            url = changes.get(f'{key}_sources', {}).get(line, {}).get('url')
+            if url and url.startswith(('https://', 'http://')):
+                return f' <{url}|보기>'
+    return ''
+
+
+def format_slack_report(total_change, event_details, notice_changes, warnings=None):
+    """Summarize changes for mobile Slack, without sending the full diff."""
+    now_str = datetime.now(KST).strftime('%m/%d %H:%M')
+    dashboard_url = os.getenv(
+        'DASHBOARD_URL',
+        'https://share.streamlit.io/rodolfochoi911-lgtm/competitor-monitor/main/Home.py'
+    )
+    notice_added = sum(len(v.get('added', [])) for v in notice_changes.values())
+    notice_removed = sum(len(v.get('removed', [])) for v in notice_changes.values())
+    lines = [f'[{now_str}] 경쟁사 모니터']
+
+    if not (total_change or notice_changes or warnings):
+        lines.append('특이사항 없음')
+    else:
+        lines.append(f'이벤트 {total_change}건 · 유의사항 +{notice_added}/-{notice_removed}줄')
+        lines += event_details[:SLACK_COMPANY_LIMIT]
+        if len(event_details) > SLACK_COMPANY_LIMIT:
+            lines.append(f'  외 {len(event_details) - SLACK_COMPANY_LIMIT}개 회사')
+        for company, change in list(sorted(notice_changes.items()))[:SLACK_NOTICE_LIMIT]:
+            count = f"+{len(change.get('added', []))}/-{len(change.get('removed', []))}"
+            summary = _short_notice_change(change)
+            lines.append(f'• {company} 유의 {count}: {summary}{_notice_source_link(change)}')
+        if len(notice_changes) > SLACK_NOTICE_LIMIT:
+            lines.append(f'  외 {len(notice_changes) - SLACK_NOTICE_LIMIT}개 회사 유의사항')
+        if warnings:
+            lines.append(
+                f'⚠️ 수집 점검 {len(warnings)}건 '
+                '<https://github.com/rodolfochoi911-lgtm/competitor-monitor/actions|로그>'
+            )
+
+    lines.append(f'<{dashboard_url}|대시보드>')
+    return '\n'.join(lines)
+
+
 def send_slack_report(total_change: int, event_details: list, notice_changes: dict, warnings=None):
     if not slack_webhook_url:
-        print("⚠️ SLACK_WEBHOOK_URL 없음")
+        print('⚠️ SLACK_WEBHOOK_URL 없음')
         return
-
-    now_str = datetime.now(KST).strftime("%y.%m.%d %H:%M:%S")
-    dashboard_url = os.getenv(
-        "DASHBOARD_URL",
-        "https://share.streamlit.io/rodolfochoi911-lgtm/competitor-monitor/main/Home.py"
-    )
-
-    if total_change == 0 and not notice_changes and not warnings:
-        msg = f"[{now_str}] 경쟁사 동향 보고\n\n특이사항 없음\n\n대시보드: {dashboard_url}"
-    else:
-        body = "\n".join(event_details) if event_details else "이벤트 변동 없음"
-        notice_count = sum(len(v['added']) + len(v['removed']) for v in notice_changes.values())
-        msg = f"[{now_str}] 경쟁사 동향 보고\n\n이벤트 {total_change}건 / 유의사항 {notice_count}줄 변동\n{body}\n\n대시보드: {dashboard_url}"
-
-    if notice_changes:
-        msg += "\n\n유의사항 변경"
-        for company, changes in sorted(notice_changes.items()):
-            msg += f"\n• {company}: 추가 {len(changes['added'])}줄 / 삭제 {len(changes['removed'])}줄"
-            for label, key in [('추가', 'added'), ('삭제', 'removed')]:
-                for line in changes[key][:2]:
-                    msg += f"\n  {label}: {line[:240]}"
-                    source = changes.get(f'{key}_sources', {}).get(line, {})
-                    if source.get('url'):
-                        msg += f"\n    {source['title'][:65]}: {source['url']}"
-    if warnings:
-        msg += f'\n\n⚠️ 수집 확인 필요 {len(warnings)}건 (실패 회사 제외 / 일부 필드 이전 값 보존)'
-        msg += '\n' + '\n'.join(warnings[:5])
+    msg = format_slack_report(total_change, event_details, notice_changes, warnings)
     try:
-        r = requests.post(slack_webhook_url, json={"text": msg}, timeout=10)
+        r = requests.post(slack_webhook_url, json={'text': msg}, timeout=10)
         r.raise_for_status()
-        print("✅ Slack 발송 완료!")
+        print('✅ Slack 발송 완료!')
     except Exception as e:
-        raise RuntimeError("Slack 알림 전송 실패") from e
+        raise RuntimeError('Slack 알림 전송 실패') from e
 
 
 # =========================================================
