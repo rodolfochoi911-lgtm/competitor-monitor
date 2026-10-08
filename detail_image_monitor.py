@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 MAX_IMAGES = 24
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 IMAGE_TIMEOUT_SECONDS = 10
-BACKGROUND_URL = re.compile(r'url\\(\\s*["\\\']?([^"\\\')]+)', re.I)
+BACKGROUND_URL = re.compile(r"url\(\s*(.*?)\s*\)", re.I)
 DETAIL_SELECTORS = (
     ".event_view", ".event-view", ".eventView", ".event_detail",
     ".event-detail", ".event_cont", ".event-cont", ".evt_cont",
@@ -71,7 +71,7 @@ def extract_detail_image_urls(page_source, page_url):
                     add(srcset.split(",")[0].strip().split()[0])
         style = tag.get("style") or ""
         for match in BACKGROUND_URL.finditer(style):
-            add(match.group(1))
+            add(match.group(1).strip(" '\""))
         if len(urls) >= MAX_IMAGES:
             break
     return urls
