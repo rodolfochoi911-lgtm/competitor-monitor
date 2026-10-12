@@ -7,6 +7,7 @@ import os
 import glob
 from monitor_core import preserve_unavailable_fields, prepare_partial_snapshot
 from detail_image_monitor import hash_detail_images
+from promotion_noise import strip_counters
 import json
 import time
 import re
@@ -74,11 +75,9 @@ def clean_html(html_source: str) -> str:
 
 
 def clean_title(title: str) -> str:
-    """제목에서 D-day / 취소선 / 날짜범위 잔재 제거"""
-    title = re.sub(r'\s*D-\d+', '', title)
+    """제목의 실시간 카운터와 취소선만 제거하고 이벤트 날짜는 보존."""
+    title = strip_counters(title)
     title = re.sub(r'~~[^~]+~~', '', title)
-    title = re.sub(r'\d{4}-\d{2}-\d{2}~\d{4}-\d{2}-\d{2}', '', title)
-    title = re.sub(r'\d{4}\.\d{2}\.\d{2}~\d{4}\.\d{2}\.\d{2}', '', title)
     title = re.sub(r'\s*\d+일\s*남음', '', title)
     return re.sub(r'\s{2,}', ' ', title).strip()
 
@@ -380,6 +379,13 @@ def visit_detail_pages(driver, targets: dict, site_name: str) -> dict:
             # Read the actual detail images, not just the list thumbnail URL.
             # SK7 is scoped first to avoid slowing down other competitors.
             if site_name == "SK 7세븐모바일":
+                final_data[url]['_content_version'] = 2
+                head = BeautifulSoup(driver.page_source, 'html.parser').select_one('.bbs-view .view-head')
+                if head:
+                    dates = re.findall(r'20\d{2}-\d{2}-\d{2}', head.get_text(' ', strip=True))
+                    if dates:
+                        final_data[url]['event_period'] = ' ~ '.join(dates)
+                final_data[url]['_image_hash_version'] = 2
                 image_hashes, image_warning = hash_detail_images(driver.page_source, url, cache=image_cache)
                 if image_warning:
                     final_data[url]["_image_collection_error"] = image_warning

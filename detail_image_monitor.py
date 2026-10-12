@@ -15,6 +15,7 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024
 IMAGE_TIMEOUT_SECONDS = 10
 BACKGROUND_URL = re.compile(r"url\(\s*(.*?)\s*\)", re.I)
 DETAIL_SELECTORS = (
+    '.bbs-view .view-body .eventCont', '.bbs-view .view-body',
     ".event_view", ".event-view", ".eventView", ".event_detail",
     ".event-detail", ".event_cont", ".event-cont", ".evt_cont",
     ".evt-cont", ".event_content", ".event-content",
@@ -46,14 +47,14 @@ def extract_detail_image_urls(page_source, page_url):
     if root is None:
         return []
 
-    for noise in root.select("header, footer, nav, aside, .gnb, .sns, .share, .breadcrumb"):
+    for noise in root.select("header, footer, nav, aside, script, style, .gnb, .sns, .share, .breadcrumb, .evt-strip, .event-recommend, .countdown, .dday, .d-day"):
         noise.decompose()
 
     urls, seen = [], set()
 
     def add(raw):
         url = _absolute_image_url(raw, page_url)
-        if url and url not in seen and len(urls) < MAX_IMAGES:
+        if url and '/event-recommend/' not in url and url not in seen:
             seen.add(url)
             urls.append(url)
 
@@ -72,21 +73,21 @@ def extract_detail_image_urls(page_source, page_url):
         style = tag.get("style") or ""
         for match in BACKGROUND_URL.finditer(style):
             add(match.group(1).strip(" '\""))
-        if len(urls) >= MAX_IMAGES:
-            break
     return urls
 
 
 def hash_detail_images(page_source, page_url, session=requests, cache=None):
     """Return (SHA-256 hashes, warning). Incomplete fetches never form a baseline."""
     urls = extract_detail_image_urls(page_source, page_url)
+    if len(urls) > MAX_IMAGES:
+        return None, f'상세 이미지 {len(urls)}개: 수집 상한 초과 (비교 기준 보존)'
     digests = []
     failures = []
     cache = cache if cache is not None else {}
     for url in urls:
         if url in cache:
             if cache[url] is None:
-                failures.append(url)
+                failures.append(f'{url}: cached download failure')
                 break
             digests.append(cache[url])
             continue
@@ -128,5 +129,5 @@ def hash_detail_images(page_source, page_url, session=requests, cache=None):
                 response.close()
 
     if failures:
-        return None, f"이미지 {len(failures)}/{len(urls)}개 확인 실패 (이전 이미지 비교 기준 보존)"
+        return None, f"이미지 {len(failures)}/{len(urls)}개 확인 실패: {failures[0]} (이전 이미지 비교 기준 보존)"
     return digests, None

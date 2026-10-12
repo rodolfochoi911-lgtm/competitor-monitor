@@ -28,6 +28,7 @@ import requests
 import pandas as pd
 from bs4 import BeautifulSoup, Comment
 from dotenv import load_dotenv
+from promotion_noise import stable_text, METADATA
 from datetime import datetime, timezone, timedelta
 
 load_dotenv()
@@ -79,14 +80,14 @@ TIMESTAMP_LINE_PATTERNS = [
 ]
 
 def is_timestamp_line(line: str) -> bool:
-    """페이지 수정일/크롤링 시각 등 날짜/시간 전용 줄 감지"""
-    return any(re.fullmatch(p, line.strip()) for p in TIMESTAMP_LINE_PATTERNS)
+    """제목이 붙은 수집 메타데이터만 제외; 날짜만 있는 줄도 보존."""
+    return bool(METADATA.fullmatch(line.strip()))
 
 
 def clean_html_to_text(html_or_text: str) -> str:
     if not html_or_text:
         return ""
-    text = str(html_or_text)
+    text = stable_text(str(html_or_text))
     if '<' in text and '>' in text:
         soup = BeautifulSoup(text, 'html.parser')
         for comment in soup.find_all(string=lambda s: isinstance(s, Comment)):
@@ -332,10 +333,13 @@ def calculate_changes(current_data: dict, prev_data: dict) -> tuple:
         if modified:
             url, delta = modified[0]
             labels = {'main_content': '본문', 'detail_image_hashes': '이미지',
-                      'title': '제목', 'img': '썸네일'}
+                      'title': '제목', 'img': '썸네일', 'event_period': '기간'}
             kinds = '·'.join(labels[k] for k in labels if k in delta)
             title = re.sub(r'\s+', ' ', curr[url].get('title') or '이벤트')[:24]
             summary += f" | {title}({kinds}) <{url}|보기>"
+            if 'event_period' in delta:
+                period = delta['event_period']
+                summary += f"\n  기간 {period['old']} → {period['new']}"
         elif added_urls:
             summary += f" <{added_urls[0]}|보기>"
         details.append(summary)
@@ -438,19 +442,24 @@ def format_slack_report(total_change, event_details, notice_changes, warnings=No
     if not (total_change or notice_changes or warnings):
         lines.append('특이사항 없음')
     else:
-        lines.append(f'이벤트 {total_change}건 · 유의사항 +{notice_added}/-{notice_removed}줄')
+        counts = []
+        if total_change:
+            counts.append(f'이벤트 {total_change}건')
+        if notice_changes:
+            counts.append(f'유의사항 {len(notice_changes)}개 회사 변경')
+        if counts:
+            lines.append(' · '.join(counts))
         lines += event_details[:SLACK_COMPANY_LIMIT]
         if len(event_details) > SLACK_COMPANY_LIMIT:
             lines.append(f'  외 {len(event_details) - SLACK_COMPANY_LIMIT}개 회사')
         for company, change in list(sorted(notice_changes.items()))[:SLACK_NOTICE_LIMIT]:
-            count = f"+{len(change.get('added', []))}/-{len(change.get('removed', []))}"
             summary = _short_notice_change(change)
-            lines.append(f'• {company} 유의 {count}: {summary}{_notice_source_link(change)}')
+            lines.append(f'• {company}: {summary}{_notice_source_link(change)}')
         if len(notice_changes) > SLACK_NOTICE_LIMIT:
             lines.append(f'  외 {len(notice_changes) - SLACK_NOTICE_LIMIT}개 회사 유의사항')
         if warnings:
             lines.append(
-                f'⚠️ 수집 확인 필요 {len(warnings)}건 '
+                f'⚠️ 수집 점검 {len(warnings)}건 '
                 '<https://github.com/rodolfochoi911-lgtm/competitor-monitor/actions|로그>'
             )
 
@@ -464,7 +473,7 @@ def send_slack_report(total_change: int, event_details: list, notice_changes: di
         return
     msg = format_slack_report(total_change, event_details, notice_changes, warnings)
     try:
-        r = requests.post(slack_webhook_url, json={'text': msg}, timeout=10)
+        r = requests.post(slack_webhook_url, json={'text': msg, 'unfurl_links': False, 'unfurl_media': False}, timeout=10)
         r.raise_for_status()
         print('✅ Slack 발송 완료!')
     except Exception as e:

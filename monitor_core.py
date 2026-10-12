@@ -4,6 +4,9 @@ import copy
 import json
 from pathlib import Path
 from bs4 import BeautifulSoup
+from promotion_noise import stable_text
+
+MONITOR_VERSION = 2
 
 
 def clean_text(value):
@@ -21,32 +24,36 @@ BODY_NOISE_RE = re.compile(
 
 
 def normalized_body(value):
-    soup = BeautifulSoup(value or '', 'html.parser')
-    for tag in soup(['script', 'style', 'noscript']):
-        tag.decompose()
-    lines = [re.sub(r'\s+', ' ', line).strip()
-             for line in soup.get_text('\n', strip=True).splitlines()]
-    return ' '.join(line for line in lines if line and not BODY_NOISE_RE.match(line))
+    return re.sub(r'\s+', ' ', stable_text(value)).strip()
 
 
 def detect_changes(old, new):
     changes = {}
-    for field in ('title', 'img', 'main_content'):
+    for field in ('title', 'img', 'main_content', 'event_period'):
         before, after = old.get(field, '') or '', new.get(field, '') or ''
         if field == 'img':
             changed = before != after
         elif field == 'main_content':
             # Avoid alerting on a temporary empty extraction.
             changed = bool(before and after) and normalized_body(before) != normalized_body(after)
+            if old.get('_content_version') != new.get('_content_version'):
+                changed = False  # New scoped extractor establishes its own baseline.
+        elif field == 'event_period':
+            if not before:
+                dates = re.findall(r'20\d{2}-\d{2}-\d{2}', old.get('main_content', '') or '')
+                if len(dates) >= 2:
+                    before = ' ~ '.join(dates[:2])
+            changed = bool(before and after) and normalized_body(before) != normalized_body(after)
         else:
-            changed = clean_text(before) != clean_text(after)
+            changed = normalized_body(before) != normalized_body(after)
         if changed:
             changes[field] = {'old': before, 'new': after}
 
     # Establish baseline on first deployment, rather than alerting for every old event.
     before_images = old.get('detail_image_hashes')
     after_images = new.get('detail_image_hashes')
-    if before_images is not None and after_images is not None and before_images != after_images:
+    if (before_images is not None and after_images is not None and before_images != after_images
+            and old.get('_image_hash_version') == new.get('_image_hash_version')):
         changes['detail_image_hashes'] = {'old': before_images, 'new': after_images}
     return changes
 
@@ -77,7 +84,7 @@ NOTICE_NOISE_RE = re.compile(
 
 def notice_lines(value):
     """금액/혜택 및 날짜·기간·기한 관련 유의사항을 반환한다."""
-    soup = BeautifulSoup(value or '', 'html.parser')
+    soup = BeautifulSoup(stable_text(value), 'html.parser')
     for tag in soup(['script', 'style', 'noscript']):
         tag.decompose()
     footer = {'이용약관', '개인정보처리방침', '개인정보 처리방침', '로그인', '회원가입'}
@@ -144,13 +151,17 @@ def preserve_unavailable_fields(current, previous, previous_snapshot=''):
         for url, event in events.items():
             old = previous.get(company, {}).get(url, {})
             retained = {}
-            for field in ('main_content', 'notice', 'detail_image_hashes'):
+            for field in ('main_content', 'notice', 'detail_image_hashes', 'event_period'):
                 if field == 'detail_image_hashes':
                     missing = old.get(field) is not None and event.get(field) is None
                 else:
                     missing = bool(clean_text(old.get(field))) and not clean_text(event.get(field))
                 if missing:
                     event[field] = old[field]
+                    if field == 'detail_image_hashes':
+                        event['_image_hash_version'] = old.get('_image_hash_version')
+                    if field == 'main_content':
+                        event['_content_version'] = old.get('_content_version')
                     retained[field] = old.get('_retained_fields', {}).get(field) or previous_snapshot
             if retained:
                 event['_retained_fields'] = retained
@@ -159,19 +170,19 @@ def preserve_unavailable_fields(current, previous, previous_snapshot=''):
 
 
 def collection_warnings(data):
-    labels = {'main_content': '본문', 'notice': '유의사항', 'detail_image_hashes': '상세 이미지'}
+    labels = {'main_content': '본문', 'notice': '유의사항', 'detail_image_hashes': '상세 이미지', 'event_period': '이벤트 기간'}
     warnings = []
     for company, events in sorted(data.items()):
         if any(event.get('_collection_error') for event in events.values()):
             warnings.append(f'{company}: 수집 실패로 이번 결과 및 변경 집계에서 제외 (이전 데이터는 비교 기준으로 보관)')
             continue
         for url, event in sorted(events.items()):
-            retained = event.get('_retained_fields', {})
+            retained = {k: v for k, v in event.get('_retained_fields', {}).items()
+                        if k != 'detail_image_hashes'}
             if retained:
                 fields = ', '.join(labels.get(field, field) for field in retained)
                 warnings.append(f"{company} / {event.get('title', url)}: {fields} 재확인 필요, 이전 수집값 보존 ({url})")
-            if event.get('_image_collection_error') and 'detail_image_hashes' not in retained:
-                warnings.append(f"{company} / {event.get('title', url)}: 상세 이미지 수집 확인 필요 ({url})")
+            # Image diagnostics remain in snapshots/logs, not repeated user alerts.
     return warnings
 
 
