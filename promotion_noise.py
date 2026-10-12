@@ -24,7 +24,7 @@ def stable_text(value):
     # Support metadata split into label and number by inline markup.
     result, skip_number = [], False
     for line in lines:
-        if re.fullmatch(r'조회\s*수?|views?', line, re.I):
+        if re.fullmatch(r'(?:조회\s*수?|views?)\s*[:：]?', line, re.I):
             skip_number = True
             continue
         if skip_number and re.fullmatch(r'[\d,]+\s*(?:회|건)?', line):

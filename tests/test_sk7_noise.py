@@ -18,6 +18,7 @@ class SK7NoiseTests(unittest.TestCase):
 
     def test_split_counter_markup(self):
         self.assertEqual('혜택', stable_text('<p>조회수 <span>1,234</span></p><p>혜택</p>'))
+        self.assertEqual('혜택', stable_text('<p>조회수: <span>1,234</span></p><p>혜택</p>'))
 
     def test_actual_durations_and_standalone_dates_survive(self):
         value = '2026-10-31\n2026년 11월 1일\n개통 후 30일 이내 지급\n12개월 유지'
