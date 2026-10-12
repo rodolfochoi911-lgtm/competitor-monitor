@@ -2,7 +2,8 @@ import importlib
 import monitor_core
 
 # A running Streamlit process can retain the module from before deployment.
-if not all(hasattr(monitor_core, name) for name in ('snapshot_warnings', 'comparison_snapshots')):
+if (getattr(monitor_core, 'MONITOR_VERSION', 0) != 2
+        or not all(hasattr(monitor_core, name) for name in ('snapshot_warnings', 'comparison_snapshots'))):
     importlib.reload(monitor_core)
 from monitor_core import detect_changes, calculate_notice_diff, snapshot_warnings, comparison_snapshots
 import streamlit as st
@@ -255,6 +256,8 @@ def prepare_export_data(company_data):
             if 'title' in chg: types.append("제목")
             if 'img' in chg: types.append("썸네일")
             if 'main_content' in chg: types.append("본문")
+            if 'detail_image_hashes' in chg: types.append("상세 이미지")
+            if 'event_period' in chg: types.append("이벤트 기간")
             rows.append({"통신사": company, "상태": "⚡ 변경", "제목": item.get('title', ''),
                          "URL": item.get('url', ''), "혜택금액": extract_benefit_amount(item.get('title', '')),
                          "변경내용": ", ".join(types) or "-"})
@@ -336,9 +339,15 @@ for company in target_companies:
             if 'title' in chg: badges.append("🏷️ 제목")
             if 'img' in chg: badges.append("🖼️ 썸네일")
             if 'main_content' in chg: badges.append("📝 본문")
+            if 'detail_image_hashes' in chg: badges.append("🖼️ 상세 이미지")
+            if 'event_period' in chg: badges.append("📅 이벤트 기간")
 
             with st.expander(f"**{item.get('title', '')}** ({', '.join(badges) or '변경'})"):
                 st.caption(f"🔗 [페이지 링크]({item.get('url', '#')})")
+                if 'event_period' in chg:
+                    st.write(f"기간: {chg['event_period']['old']} → {chg['event_period']['new']}")
+                if 'detail_image_hashes' in chg:
+                    st.write('상세 이미지 내용이 변경되었습니다. 페이지에서 변경 내용을 확인하세요.')
 
                 if 'title' in chg:
                     st.markdown("**🏷️ 제목 변경**")

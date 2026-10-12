@@ -8,7 +8,8 @@ content_extractor.py
 
 import re
 import time
-from bs4 import BeautifulSoup, NavigableString
+from bs4 import BeautifulSoup, NavigableString, Comment
+from promotion_noise import stable_text, COUNTER_SELECTORS
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -34,7 +35,6 @@ NOISE_TEXT_PATTERNS = [
     r'D[-\s]?\d+',
     r'조회\s*\d+',
     r'좋아요\s*\d+',
-    r'^\d{4}[.\-/]\d{2}[.\-/]\d{2}$',
     r'^(이전|다음|목록|닫기|열기|TOP|top)$',
     r'^(주메뉴|본문 바로가기|메뉴|바로가기)$',
     r'^\s*$',
@@ -268,6 +268,10 @@ def wait_and_expand(driver, timeout: int = 8) -> int:
 # HTML 노이즈 제거
 # =========================================================
 def remove_noise_elements(soup: BeautifulSoup) -> BeautifulSoup:
+    for comment in soup.find_all(string=lambda s: isinstance(s, Comment)):
+        comment.extract()
+    for el in soup.select(COUNTER_SELECTORS + ', .evt-strip'):
+        el.decompose()
     for el in list(soup.find_all(True)):
         try:
             # ★ 핵심 수정: decompose된 요소는 attrs가 None → 건너뜀
@@ -318,7 +322,7 @@ def extract_clean_text(element) -> str:
                     lines.append(text)
     except Exception:
         pass
-    return '\n'.join(lines)
+    return stable_text('\n'.join(lines))
 
 
 # =========================================================
@@ -434,6 +438,10 @@ def extract_page_content(driver, url: str) -> dict:
         acc_clicked = wait_and_expand(driver)
 
         soup = BeautifulSoup(driver.page_source, 'html.parser')
+        if 'www.sk7mobile.com/' in url:
+            detail = soup.select_one('.bbs-view')
+            if detail is not None:
+                soup = BeautifulSoup(str(detail), 'html.parser')
         soup = remove_noise_elements(soup)
 
         notice = extract_notice_section(soup)

@@ -75,7 +75,7 @@ class DetailImageTests(unittest.TestCase):
         current = {'A': {'u': {'title': '행사'}}}
         warnings = preserve_unavailable_fields(current, old, 'old.json')
         self.assertEqual(['old_digest'], current['A']['u']['detail_image_hashes'])
-        self.assertEqual(1, len(warnings))
+        self.assertEqual([], warnings)
 
 
 if __name__ == '__main__':

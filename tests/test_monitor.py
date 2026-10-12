@@ -345,7 +345,7 @@ class PromotionRegressionTests(unittest.TestCase):
             parser.send_slack_report(0, [], {}, ['본문 이전 값 보존'])
             text = post.call_args.kwargs['json']['text']
             self.assertNotIn('특이사항 없음', text)
-            self.assertIn('수집 확인 필요', text)
+            self.assertIn('수집 점검', text)
 
     def test_failed_crawl_does_not_write_snapshot(self):
         import main
