@@ -10,6 +10,33 @@ PAGE = 'https://www.sk7mobile.com/bnef/event/eventIngView.do?cntId=test'
 
 
 class SK7NoiseTests(unittest.TestCase):
+    def test_umobile_countdown_full_line_and_split_markup(self):
+        value = '신청기간 2026-10-02 ~ 2026-10-19\n이벤트 마감까지 D-00 00 : 00 남았어요!'
+        self.assertEqual('신청기간 2026-10-02 ~ 2026-10-19', stable_text(value))
+        html = ('<div>신청기간 2026-10-02 ~ 2026-10-19</div>'
+                '<div>이벤트 마감까지 <span>D-00</span> <span>00 : 00</span> 남았어요!</div>')
+        self.assertEqual('신청기간 2026-10-02 ~ 2026-10-19', stable_text(html))
+        self.assertEqual('혜택 안내', stable_text('D-09 12:40:20\n혜택 안내'))
+
+    def test_sk7_review_feed_is_not_promotion_body(self):
+        from content_extractor import extract_page_content
+        driver = Mock()
+        driver.page_source = (
+            '<div class="bbs-view"><div class="view-body">'
+            '<div class="eventCont">'
+            '<p>후기 작성 시 Npay 5만원 지급</p>'
+            '<p>이벤트 기간 2026-10-01 ~ 2026-10-31</p>'
+            '<section class="review-list"><p>회원 실제 후기 매일 추가</p></section>'
+            '</div>'
+            '<div class="some-dynamic-feed">다른 고객이 작성한 리뷰 텍스트</div>'
+            '</div></div>')
+        with patch('content_extractor.wait_and_expand', return_value=0):
+            result = extract_page_content(driver, PAGE)
+        self.assertIn('후기 작성 시 Npay 5만원 지급', result['main_content'])
+        self.assertIn('2026-10-31', result['main_content'])
+        self.assertNotIn('회원 실제 후기', result['full_text'])
+        self.assertNotIn('다른 고객이 작성한 리뷰', result['full_text'])
+
     def test_counter_variants_and_inline_dates(self):
         for counter in ['조회수: 1,234회', '조회 수 56', '조회 77', 'D-10', 'd − 9', 'D-DAY', 'D + 1', '3일 남음']:
             with self.subTest(counter=counter):
