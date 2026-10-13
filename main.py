@@ -379,7 +379,7 @@ def visit_detail_pages(driver, targets: dict, site_name: str) -> dict:
             # Read the actual detail images, not just the list thumbnail URL.
             # SK7 is scoped first to avoid slowing down other competitors.
             if site_name == "SK 7세븐모바일":
-                final_data[url]['_content_version'] = 2
+                final_data[url]['_content_version'] = 3  # Review-exclusion scope: first observation is a baseline.
                 head = BeautifulSoup(driver.page_source, 'html.parser').select_one('.bbs-view .view-head')
                 if head:
                     dates = re.findall(r'20\d{2}-\d{2}-\d{2}', head.get_text(' ', strip=True))
