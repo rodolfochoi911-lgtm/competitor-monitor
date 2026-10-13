@@ -75,6 +75,22 @@ MAIN_CONTENT_SELECTORS = [
 ]
 
 
+# In SK7 event pages, user-submitted reviews and comment lists may live
+# alongside the campaign. Keep the campaign's "후기 작성" benefit/terms.
+SK7_USER_REVIEW_SELECTORS = (
+    '.review-list, .review_list, .reviewList, .review-items, .reviewItems, '
+    '.review-item, .review_item, .reviewItem, .user-review, .userReview, '
+    '.review-comments, .reviewComments, .comment-list, .comment_list, '
+    '.commentList, .comment-item, .reply-list, .reply_list, .replyList, '
+    '[id*="reviewList" i], [id*="commentList" i], [id*="replyList" i]'
+)
+
+
+def remove_sk7_user_reviews(soup: BeautifulSoup) -> None:
+    for item in soup.select(SK7_USER_REVIEW_SELECTORS):
+        item.decompose()
+
+
 # =========================================================
 # 아코디언 클릭 (4가지 방법 순차 시도)
 # =========================================================
@@ -438,14 +454,26 @@ def extract_page_content(driver, url: str) -> dict:
         acc_clicked = wait_and_expand(driver)
 
         soup = BeautifulSoup(driver.page_source, 'html.parser')
-        if 'www.sk7mobile.com/' in url:
+        is_sk7 = 'www.sk7mobile.com/' in url
+        if is_sk7:
             detail = soup.select_one('.bbs-view')
             if detail is not None:
                 soup = BeautifulSoup(str(detail), 'html.parser')
+                remove_sk7_user_reviews(soup)
         soup = remove_noise_elements(soup)
 
         notice = extract_notice_section(soup)
-        main_content = extract_main_content(soup)
+        campaign = soup.select_one('.view-body .eventCont') if is_sk7 else None
+        if campaign is not None:
+            # A SK7 promotion may have a separate user-review feed in .bbs-view.
+            # Only campaign copy belongs in the event body; never fall back to reviews.
+            campaign = BeautifulSoup(str(campaign), 'html.parser')
+            for sel in NOTICE_SELECTORS:
+                for el in campaign.select(sel):
+                    el.decompose()
+            main_content = extract_clean_text(campaign)
+        else:
+            main_content = extract_main_content(soup)
 
         parts = []
         if main_content:
