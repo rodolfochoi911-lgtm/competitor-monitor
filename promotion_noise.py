@@ -16,6 +16,11 @@ LIVE_COUNTDOWN = re.compile(
     r'(?:\s*[:：]\s*\d{2})?\s*(?:남았어요!?|남았습니다!?|남음)?',
     re.I,
 )
+# U+ UMobile renders a live numeric countdown (e.g. "45 남았어요!")
+# without a D- prefix. Drop the whole ephemeral label, not event dates.
+REMAINING_COUNTDOWN = re.compile(
+    r'(?<![\d/])(?:공유\s*아이콘\s*)?\d{1,3}\s*남았어요\s*!?', re.I
+)
 METADATA = re.compile(r'^(?:검색일|수집일|크롤링\s*시각|최종\s*수정일)\s*[:：]?.*$', re.I)
 COUNTER_SELECTORS = ('.d-day, .dday, .dDay, .day-count, .countdown, .view-count, .views, '
                      '[class*="countdown" i], [id*="countdown" i], '
@@ -23,7 +28,7 @@ COUNTER_SELECTORS = ('.d-day, .dday, .dDay, .day-count, .countdown, .view-count,
 
 
 def strip_counters(text):
-    text = LIVE_COUNTDOWN.sub('', text or '')
+    text = REMAINING_COUNTDOWN.sub('', LIVE_COUNTDOWN.sub('', text or ''))
     return re.sub(r'[ \t]+', ' ', COUNTERS.sub('', text)).strip()
 
 
@@ -33,7 +38,7 @@ def stable_text(value):
         tag.decompose()
     for comment in soup.find_all(string=lambda s: isinstance(s, Comment)):
         comment.extract()
-    raw_text = LIVE_COUNTDOWN.sub('', soup.get_text('\n', strip=True))
+    raw_text = REMAINING_COUNTDOWN.sub('', LIVE_COUNTDOWN.sub('', soup.get_text('\n', strip=True)))
     lines = [strip_counters(line) for line in raw_text.splitlines()]
     # Support metadata split into label and number by inline markup.
     result, skip_number = [], False
