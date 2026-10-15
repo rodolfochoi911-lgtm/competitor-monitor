@@ -82,6 +82,11 @@ NOTICE_NOISE_RE = re.compile(
 )
 
 
+EVENT_CODE_NOTICE_RE = re.compile(
+    r'(?:이벤트|프로모션|쿠폰|할인)\s*코드\s*[:：=]\s*\S+', re.IGNORECASE
+)
+
+
 def notice_lines(value):
     """금액/혜택 및 날짜·기간·기한 관련 유의사항을 반환한다."""
     soup = BeautifulSoup(stable_text(value), 'html.parser')
@@ -94,7 +99,7 @@ def notice_lines(value):
         if not line or line in footer or NOTICE_NOISE_RE.search(line):
             continue
         if (AMOUNT_NOTICE_RE.search(line) or PERCENT_BENEFIT_RE.search(line)
-                or PERIOD_NOTICE_RE.search(line)):
+                or PERIOD_NOTICE_RE.search(line) or EVENT_CODE_NOTICE_RE.search(line)):
             lines.add(line)
     return lines
 
