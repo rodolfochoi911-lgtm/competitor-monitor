@@ -18,7 +18,8 @@ parser.py
 
 import os
 from monitor_core import (detect_changes, calculate_notice_diff, validate_snapshot,
-                          collection_warnings, notice_lines, comparison_snapshots, snapshot_warnings)
+                          collection_warnings, notice_lines, comparison_snapshots, snapshot_warnings,
+                          EVENT_CODE_NOTICE_RE)
 import json
 import time
 import glob
@@ -202,7 +203,8 @@ def split_into_notice_items(text: str) -> list:
     def flush():
         if current:
             merged = ' '.join(current)
-            if len(merged) >= 15 or re.search(r'20\d{2}\s*(?:[./-]|년)\s*\d{1,2}\s*(?:[./-]|월)\s*\d{1,2}', merged):
+            if (len(merged) >= 15 or EVENT_CODE_NOTICE_RE.search(merged)
+                    or re.search(r'20\d{2}\s*(?:[./-]|년)\s*\d{1,2}\s*(?:[./-]|월)\s*\d{1,2}', merged)):
                 items.append(merged)
             current.clear()
 
