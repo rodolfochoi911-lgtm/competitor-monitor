@@ -397,6 +397,26 @@ def _short_notice_change(changes):
     added, removed = changes.get('added', []), changes.get('removed', [])
     old_sources = changes.get('removed_sources', {})
     new_sources = changes.get('added_sources', {})
+
+    # Prioritize a changed event code; a generic conditions label hides the key detail.
+    def code_value(line):
+        match = EVENT_CODE_NOTICE_RE.search(line)
+        return re.split(r'\s*[:：=]\s*', match.group(0), maxsplit=1)[-1] if match else None
+
+    for new_line in added[:10]:
+        new_code = code_value(new_line)
+        if not new_code:
+            continue
+        for old_line in removed[:10]:
+            old_code = code_value(old_line)
+            if not old_code or old_code == new_code:
+                continue
+            old_url = old_sources.get(old_line, {}).get('url')
+            new_url = new_sources.get(new_line, {}).get('url')
+            if old_url and new_url and old_url != new_url:
+                continue
+            return f'코드 {old_code[:20]}→{new_code[:20]}'
+
     for new_line in added[:10]:
         new_tokens = NOTICE_DATE_TOKEN_RE.findall(new_line)
         if not new_tokens or not PERIOD_HINT_RE.search(new_line):
