@@ -42,6 +42,9 @@ class UMobileEventCodeTests(unittest.TestCase):
         self.assertEqual([after_code], change["added"])
         self.assertEqual([before_code], change["removed"])
         self.assertEqual(URL, change["added_sources"][after_code]["url"])
+        slack = parser.format_slack_report(0, [], {COMPANY: change})
+        self.assertIn("코드 가을특가→해피할로윈", slack)
+        self.assertIn(f"<{URL}|보기>", slack)
 
     def test_event_code_and_period_survive_umobile_notice_extraction(self):
         driver = Mock()
