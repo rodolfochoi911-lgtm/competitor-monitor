@@ -1,0 +1,19 @@
+name: Test Slack Only 🚀
+
+on:
+  workflow_dispatch: # 수동 실행 버튼
+
+jobs:
+  test-slack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - run: pip install pandas requests
+      
+      - name: 슬랙 발사
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: python resend_slack.py
