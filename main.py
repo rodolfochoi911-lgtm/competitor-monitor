@@ -379,7 +379,7 @@ def visit_detail_pages(driver, targets: dict, site_name: str) -> dict:
             # Read the actual detail images, not just the list thumbnail URL.
             # SK7 is scoped first to avoid slowing down other competitors.
             if site_name == "SK 7세븐모바일":
-                final_data[url]['_content_version'] = 3  # Review-exclusion scope: first observation is a baseline.
+                final_data[url]['_content_version'] = 4  # Verified image-only bodies establish a fresh text baseline.
                 head = BeautifulSoup(driver.page_source, 'html.parser').select_one('.bbs-view .view-head')
                 if head:
                     dates = re.findall(r'20\d{2}-\d{2}-\d{2}', head.get_text(' ', strip=True))
@@ -392,6 +392,8 @@ def visit_detail_pages(driver, targets: dict, site_name: str) -> dict:
                     print(f"   ⚠️ [SK7 상세 이미지] {title[:30]}: {image_warning}")
                 else:
                     final_data[url]["detail_image_hashes"] = image_hashes
+                    if image_hashes and content_data.get("_body_status") == "image_only":
+                        final_data[url]["_body_status"] = "image_only"
 
             print(f"   ✓ [{site_name}] {title[:30]} | 본문 {len(content_data['main_content'])}자 | 유의사항 {len(content_data['notice'])}자")
 
@@ -748,4 +750,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
 

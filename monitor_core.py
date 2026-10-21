@@ -1,5 +1,6 @@
 """Shared change detection for notifications and the dashboard."""
 import re
+import hashlib
 import copy
 import json
 from pathlib import Path
@@ -161,6 +162,17 @@ def preserve_unavailable_fields(current, previous, previous_snapshot=''):
                     missing = old.get(field) is not None and event.get(field) is None
                 else:
                     missing = bool(clean_text(old.get(field))) and not clean_text(event.get(field))
+                if field == 'main_content' and event.get('_body_status') == 'image_only':
+                    # A verified image campaign has no text body to recover.
+                    continue
+                if field == 'notice' and not missing:
+                    before, after = normalized_body(old.get(field)), normalized_body(event.get(field))
+                    if before and after and before != after:
+                        candidate = hashlib.sha256(after.encode('utf-8')).hexdigest()
+                        if old.get('_notice_candidate') != candidate:
+                            # A single partial extraction must not replace a known-good notice.
+                            event['_notice_candidate'] = candidate
+                            missing = True
                 if missing:
                     event[field] = old[field]
                     if field == 'detail_image_hashes':
@@ -183,7 +195,7 @@ def collection_warnings(data):
             continue
         for url, event in sorted(events.items()):
             retained = {k: v for k, v in event.get('_retained_fields', {}).items()
-                        if k != 'detail_image_hashes'}
+                        if k != 'detail_image_hashes' and not (k == 'notice' and event.get('_notice_candidate'))}
             if retained:
                 fields = ', '.join(labels.get(field, field) for field in retained)
                 warnings.append(f"{company} / {event.get('title', url)}: {fields} 재확인 필요, 이전 수집값 보존 ({url})")
@@ -226,4 +238,6 @@ def snapshot_warnings(data, snapshot_path):
             if company not in data:
                 warnings.append(f'{company}: 수집 실패로 이번 결과에서 제외 ({error})')
     return warnings
+
+
 

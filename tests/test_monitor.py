@@ -222,7 +222,7 @@ class PromotionRegressionTests(unittest.TestCase):
         changed = detect_changes(dict(base, detail_image_hashes=['old_hash']), after)
         self.assertIn('detail_image_hashes', changed)
 
-    def test_slack_push_includes_image_event_url(self):
+    def test_slack_push_shows_company_count_without_event_url(self):
         old = {'A': {'https://example.com/event': {'title': '행사', 'detail_image_hashes': ['a']}}}
         new = {'A': {'https://example.com/event': {'title': '행사', 'detail_image_hashes': ['b']}}}
         count, _, details = parser.calculate_changes(new, old)
@@ -230,8 +230,8 @@ class PromotionRegressionTests(unittest.TestCase):
         with patch.object(parser, 'slack_webhook_url', 'https://example.invalid'), patch.object(parser.requests, 'post') as post:
             parser.send_slack_report(count, details, {})
             text = post.call_args.kwargs['json']['text']
-            self.assertIn('이미지)', text)
-            self.assertIn('https://example.com/event', text)
+            self.assertIn('• A: 1건 (수정 1건)', text)
+            self.assertNotIn('https://example.com/event', text)
 
     def test_identical_notice_keeps_both_event_sources(self):
         text = '가입 고객에게 상품권 30,000원을 지급합니다.'
@@ -292,7 +292,8 @@ class PromotionRegressionTests(unittest.TestCase):
             warnings=['https://example.com/image/' + '경고' * 120] * 12
         )
         self.assertLess(len(text), 950)
-        self.assertIn('외 5개 회사', text)
+        self.assertIn('통신사8:', text)
+        self.assertNotIn('외 5개 회사', text)
         self.assertIn('외 6개 회사 유의사항', text)
         self.assertIn('수집 점검 12건', text)
         self.assertNotIn('아주 긴 설명', text)
@@ -324,7 +325,7 @@ class PromotionRegressionTests(unittest.TestCase):
         current = {'SKT 다이렉트': {url: {'title': '요금제', 'main_content': '', 'notice': '새 조건'}}}
         preserve_unavailable_fields(current, old, 'old.json')
         self.assertEqual('이전 본문', current['SKT 다이렉트'][url]['main_content'])
-        self.assertEqual('새 조건', current['SKT 다이렉트'][url]['notice'])
+        self.assertEqual('기존 조건', current['SKT 다이렉트'][url]['notice'])
         self.assertEqual({}, detect_changes(old['SKT 다이렉트'][url], current['SKT 다이렉트'][url]))
         self.assertFalse(calculate_notice_diff(current, old))
 
@@ -386,4 +387,6 @@ class PromotionRegressionTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
 

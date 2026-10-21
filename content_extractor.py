@@ -114,6 +114,8 @@ def _is_inline_expander(el):
 
 
 def _safe_click(driver, el) -> bool:
+    if el.get_attribute('aria-expanded') == 'true':
+        return False
     if not _is_inline_expander(el):
         return False
     try:
@@ -149,6 +151,14 @@ def _safe_click(driver, el) -> bool:
 
 def _click_accordions(driver) -> int:
     clicked = 0
+    seen = set()
+
+    def expand_once(el):
+        key = el.id
+        if key in seen:
+            return False
+        seen.add(key)
+        return _safe_click(driver, el)
 
     # A: aria-expanded="false"
     try:
@@ -168,7 +178,7 @@ def _click_accordions(driver) -> int:
                 c in el_class for c in ["accordion", "toggle", "collapse", "fold", "more"]
             )
             if any(kw in label for kw in NOTICE_KEYWORDS) or is_accordion_class:
-                if _safe_click(driver, el):
+                if expand_once(el):
                     clicked += 1
     except Exception:
         pass
@@ -191,7 +201,7 @@ def _click_accordions(driver) -> int:
                 parent_class = ""
             if any(c in parent_class for c in ["open", "active", "expanded", "show"]):
                 continue
-            if _safe_click(driver, el):
+            if expand_once(el):
                 clicked += 1
     except Exception:
         pass
@@ -209,7 +219,7 @@ def _click_accordions(driver) -> int:
                 pass
             text = el.text.strip()
             if any(kw in text for kw in NOTICE_KEYWORDS) or not text:
-                if _safe_click(driver, el):
+                if expand_once(el):
                     clicked += 1
     except Exception:
         pass
@@ -233,7 +243,7 @@ def _click_accordions(driver) -> int:
                 continue
             if any(c in el_class for c in ["active", "on", "selected", "current"]):
                 continue
-            if _safe_click(driver, el):
+            if expand_once(el):
                 clicked += 1
     except Exception:
         pass
@@ -283,7 +293,7 @@ def wait_and_expand(driver, timeout: int = 8) -> int:
 # =========================================================
 # HTML 노이즈 제거
 # =========================================================
-def remove_noise_elements(soup: BeautifulSoup) -> BeautifulSoup:
+def remove_noise_elements(soup: BeautifulSoup, preserve_collapsed=False) -> BeautifulSoup:
     for comment in soup.find_all(string=lambda s: isinstance(s, Comment)):
         comment.extract()
     for el in soup.select(COUNTER_SELECTORS + ', .evt-strip'):
@@ -297,7 +307,7 @@ def remove_noise_elements(soup: BeautifulSoup) -> BeautifulSoup:
             style = el.get('style', '').replace(' ', '')
             classes = ' '.join(el.get('class', []))
 
-            if (
+            if not preserve_collapsed and (
                 'display:none' in style
                 or 'visibility:hidden' in style
                 or el.get('hidden') is not None
@@ -460,10 +470,12 @@ def extract_page_content(driver, url: str) -> dict:
             if detail is not None:
                 soup = BeautifulSoup(str(detail), 'html.parser')
                 remove_sk7_user_reviews(soup)
+        # Collapsed terms remain valid content even when their panel is hidden.
+        notice_soup = remove_noise_elements(BeautifulSoup(str(soup), 'html.parser'), preserve_collapsed=True)
+        notice = extract_notice_section(notice_soup)
         soup = remove_noise_elements(soup)
-
-        notice = extract_notice_section(soup)
         campaign = soup.select_one('.view-body .eventCont') if is_sk7 else None
+        image_campaign = bool(campaign is not None and campaign.select_one("img[src], img[data-src]"))
         if campaign is not None:
             # A SK7 promotion may have a separate user-review feed in .bbs-view.
             # Only campaign copy belongs in the event body; never fall back to reviews.
@@ -483,6 +495,7 @@ def extract_page_content(driver, url: str) -> dict:
         full_text = '\n\n'.join(parts)
 
         return {
+            "_body_status":      "image_only" if image_campaign and not main_content else ("text" if main_content else "unavailable"),
             "main_content":      main_content,
             "notice":            notice,
             "full_text":         full_text,
@@ -492,4 +505,6 @@ def extract_page_content(driver, url: str) -> dict:
     except Exception as e:
         print(f"   ⚠️ 콘텐츠 추출 실패 [{url[:50]}]: {e}")
         raise RuntimeError(f"콘텐츠 추출 실패: {url}") from e
+
+
 

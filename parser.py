@@ -329,21 +329,7 @@ def calculate_changes(current_data: dict, prev_data: dict) -> tuple:
             parts.append(f"종료 {len(removed_urls)}")
         if modified:
             parts.append(f"수정 {len(modified)}")
-        summary = f"• {company}: {'·'.join(parts)}"
-
-        # Show only one representative link, never a URL dump.
-        if modified:
-            url, delta = modified[0]
-            labels = {'main_content': '본문', 'detail_image_hashes': '이미지',
-                      'title': '제목', 'img': '썸네일', 'event_period': '기간'}
-            kinds = '·'.join(labels[k] for k in labels if k in delta)
-            title = re.sub(r'\s+', ' ', curr[url].get('title') or '이벤트')[:24]
-            summary += f" | {title}({kinds}) <{url}|보기>"
-            if 'event_period' in delta:
-                period = delta['event_period']
-                summary += f"\n  기간 {period['old']} → {period['new']}"
-        elif added_urls:
-            summary += f" <{added_urls[0]}|보기>"
+        summary = f"• {company}: {total}건 ({', '.join(part + '건' for part in parts)})"
         details.append(summary)
 
     return sum(changes.values()), changes, details
@@ -459,21 +445,21 @@ def format_slack_report(total_change, event_details, notice_changes, warnings=No
     )
     notice_added = sum(len(v.get('added', [])) for v in notice_changes.values())
     notice_removed = sum(len(v.get('removed', [])) for v in notice_changes.values())
-    lines = [f'[{now_str}] 경쟁사 모니터']
+    lines = [f'경쟁사 프로모션 변경 안내 · {now_str}', '']
 
     if not (total_change or notice_changes or warnings):
         lines.append('특이사항 없음')
     else:
         counts = []
         if total_change:
-            counts.append(f'이벤트 {total_change}건')
+            counts.append(f'총 {total_change}건 변동')
         if notice_changes:
             counts.append(f'유의사항 {len(notice_changes)}개 회사 변경')
         if counts:
             lines.append(' · '.join(counts))
-        lines += event_details[:SLACK_COMPANY_LIMIT]
-        if len(event_details) > SLACK_COMPANY_LIMIT:
-            lines.append(f'  외 {len(event_details) - SLACK_COMPANY_LIMIT}개 회사')
+        if event_details:
+            lines.append('')
+            lines += event_details
         for company, change in list(sorted(notice_changes.items()))[:SLACK_NOTICE_LIMIT]:
             summary = _short_notice_change(change)
             lines.append(f'• {company}: {summary}{_notice_source_link(change)}')
@@ -485,7 +471,7 @@ def format_slack_report(total_change, event_details, notice_changes, warnings=No
                 '<https://github.com/rodolfochoi911-lgtm/competitor-monitor/actions|로그>'
             )
 
-    lines.append(f'<{dashboard_url}|대시보드>')
+    lines += ['', f'대시보드: <{dashboard_url}|열기>']
     return '\n'.join(lines)
 
 
@@ -635,5 +621,7 @@ def run_parser():
 
 if __name__ == "__main__":
     run_parser()
+
+
 
 
