@@ -122,10 +122,21 @@ def calculate_notice_diff(current, previous):
     current, previous = comparison_snapshots(current, previous)
     result = {}
     for company in sorted(set(current) | set(previous)):
-        before_sources = company_notice_sources(previous, company)
-        after_sources = company_notice_sources(current, company)
-        added = sorted(after_sources.keys() - before_sources.keys())
-        removed = sorted(before_sources.keys() - after_sources.keys())
+        before_sources, after_sources = {}, {}
+        # Compare the same event; another event retaining identical terms must
+        # not hide this event's removal. New/ended events have their own report.
+        for url in set(current.get(company, {})) & set(previous.get(company, {})):
+            old, new = previous[company][url], current[company][url]
+            if new.get('_notice_pending'):
+                continue
+            before = all_notice_lines(old.get('notice'))
+            after = all_notice_lines(new.get('notice'))
+            for line in before - after:
+                before_sources[line] = {'url': url, 'title': old.get('title', '')}
+            for line in after - before:
+                after_sources[line] = {'url': url, 'title': new.get('title', '')}
+        added = sorted(after_sources)
+        removed = sorted(before_sources)
         if added or removed:
             result[company] = {
                 'added': added, 'removed': removed,
@@ -134,6 +145,13 @@ def calculate_notice_diff(current, previous):
                 'removed_sources': {line: before_sources[line] for line in removed},
             }
     return result
+
+
+def all_notice_lines(value):
+    """Compare contractual prose including exclusions without numbers."""
+    return {re.sub(r'\s+', ' ', line).strip() for line in stable_text(value).splitlines()
+            if line.strip() and line.strip() not in {'유의사항', '상세열기', '상세 열기'}
+            and not NOTICE_NOISE_RE.search(line)}
 
 
 def validate_snapshot(current, previous=None):
@@ -165,14 +183,9 @@ def preserve_unavailable_fields(current, previous, previous_snapshot=''):
                 if field == 'main_content' and event.get('_body_status') == 'image_only':
                     # A verified image campaign has no text body to recover.
                     continue
-                if field == 'notice' and not missing:
-                    before, after = normalized_body(old.get(field)), normalized_body(event.get(field))
-                    if before and after and before != after:
-                        candidate = hashlib.sha256(after.encode('utf-8')).hexdigest()
-                        if old.get('_notice_candidate') != candidate:
-                            # A single partial extraction must not replace a known-good notice.
-                            event['_notice_candidate'] = candidate
-                            missing = True
+                if field == 'notice':
+                    from notice_observation import retain_unconfirmed_notice
+                    missing = retain_unconfirmed_notice(event, old, previous_snapshot)
                 if missing:
                     event[field] = old[field]
                     if field == 'detail_image_hashes':
@@ -194,8 +207,18 @@ def collection_warnings(data):
             warnings.append(f'{company}: 수집 실패로 이번 결과 및 변경 집계에서 제외 (이전 데이터는 비교 기준으로 보관)')
             continue
         for url, event in sorted(events.items()):
+            if event.get('_notice_pending'):
+                pending = event['_notice_pending']
+                risk = '변경 후보 있음' if pending.get('changed') else '현재 원문 검증 실패'
+                if pending.get('changed'):
+                    before = all_notice_lines(pending.get('baseline'))
+                    after = all_notice_lines(pending.get('observed'))
+                    removed = ' / '.join(sorted(before - after))[:100] or '(없음)'
+                    added = ' / '.join(sorted(after - before))[:100] or '(수집되지 않음)'
+                    risk += f'; {removed} → {added}'
+                warnings.append(f"{company} / {event.get('title', url)}: 유의사항 미확인 ({risk}), 마지막 기준 {pending.get('since', '')} ({url})")
             retained = {k: v for k, v in event.get('_retained_fields', {}).items()
-                        if k != 'detail_image_hashes' and not (k == 'notice' and event.get('_notice_candidate'))}
+                        if k != 'detail_image_hashes' and not (k == 'notice' and event.get('_notice_pending'))}
             if retained:
                 fields = ', '.join(labels.get(field, field) for field in retained)
                 warnings.append(f"{company} / {event.get('title', url)}: {fields} 재확인 필요, 이전 수집값 보존 ({url})")
