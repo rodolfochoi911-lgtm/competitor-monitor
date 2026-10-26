@@ -464,15 +464,35 @@ def extract_page_content(driver, url: str) -> dict:
         acc_clicked = wait_and_expand(driver)
 
         soup = BeautifulSoup(driver.page_source, 'html.parser')
+        notice_scope = ''
         is_sk7 = 'www.sk7mobile.com/' in url
         if is_sk7:
             detail = soup.select_one('.bbs-view')
             if detail is not None:
                 soup = BeautifulSoup(str(detail), 'html.parser')
                 remove_sk7_user_reviews(soup)
+                notice_scope = '.bbs-view'
+        else:
+            for selector in MAIN_CONTENT_SELECTORS:
+                detail = soup.select_one(selector)
+                if detail is not None:
+                    soup = BeautifulSoup(str(detail), 'html.parser')
+                    notice_scope = selector
+                    break
         # Collapsed terms remain valid content even when their panel is hidden.
         notice_soup = remove_noise_elements(BeautifulSoup(str(soup), 'html.parser'), preserve_collapsed=True)
+        # Dialogs and unused templates are not collapsed campaign terms.
+        for el in notice_soup.select('template, [role="dialog"], [aria-modal="true"]'):
+            el.decompose()
         notice = extract_notice_section(notice_soup)
+        missing_panels = False
+        for control in notice_soup.select('[aria-controls]'):
+            if not any(word in control.get_text(' ', strip=True) for word in NOTICE_KEYWORDS):
+                continue
+            for target in control.get('aria-controls', '').split():
+                panel = notice_soup.find(id=target)
+                if panel is None or not panel.get_text(strip=True):
+                    missing_panels = True
         soup = remove_noise_elements(soup)
         campaign = soup.select_one('.view-body .eventCont') if is_sk7 else None
         image_campaign = bool(campaign is not None and campaign.select_one("img[src], img[data-src]"))
@@ -495,6 +515,9 @@ def extract_page_content(driver, url: str) -> dict:
         full_text = '\n\n'.join(parts)
 
         return {
+            '_notice_scope': notice_scope,
+            # Empty or unknown-scope observations require review, never deletion.
+            '_notice_complete': bool(notice_scope and notice and not missing_panels and not notice_soup.select('[aria-busy="true"], .loading, .spinner')),
             "_body_status":      "image_only" if image_campaign and not main_content else ("text" if main_content else "unavailable"),
             "main_content":      main_content,
             "notice":            notice,
