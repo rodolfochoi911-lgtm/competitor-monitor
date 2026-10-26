@@ -470,6 +470,11 @@ def format_slack_report(total_change, event_details, notice_changes, warnings=No
                 f'⚠️ 수집 점검 {len(warnings)}건 '
                 '<https://github.com/rodolfochoi911-lgtm/competitor-monitor/actions|로그>'
             )
+            # A retained value is not evidence of no change. Show unresolved
+            # notice risk in the message instead of burying it in a log count.
+            notice_risks = [w for w in warnings if '유의사항 미확인' in w]
+            for warning in notice_risks[:3]:
+                lines.append('• ' + warning)
 
     lines += ['', f'대시보드: <{dashboard_url}|열기>']
     return '\n'.join(lines)
