@@ -116,6 +116,20 @@ def _is_inline_expander(el):
 def _safe_click(driver, el) -> bool:
     if el.get_attribute('aria-expanded') == 'true':
         return False
+    # SK7 puts expanded state on the sibling dd, not the button. Its
+    # already-open button is labelled '닫기'; clicking it closes valid terms.
+    if (el.get_attribute('title') or '').strip() == '닫기':
+        return False
+    if el.tag_name in ('div', 'section', 'dl'):
+        # data-accordion containers are not toggles. Clicking their centre
+        # depends on layout and can hit an arbitrary descendant button.
+        return False
+    try:
+        panel = el.find_element(By.XPATH, "ancestor::dt[1]/following-sibling::dd[1]")
+        if panel.get_attribute('aria-expanded') == 'true':
+            return False
+    except Exception:
+        pass
     if not _is_inline_expander(el):
         return False
     try:
