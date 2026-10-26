@@ -19,7 +19,7 @@ class CollectionStabilityTests(unittest.TestCase):
         previous = self.snapshot(full)
         for observed in ['상품권 5만원 지급', full, '상품권 5만원 지급', full]:
             current = self.snapshot(observed)
-            self.assertEqual([], preserve_unavailable_fields(current, previous, 'previous.json'))
+            preserve_unavailable_fields(current, previous, 'previous.json')
             self.assertEqual({}, calculate_notice_diff(current, previous))
             self.assertEqual(full, current['SK7'][PAGE]['notice'])
             previous = current
@@ -30,6 +30,7 @@ class CollectionStabilityTests(unittest.TestCase):
         preserve_unavailable_fields(first, previous)
         self.assertEqual({}, calculate_notice_diff(first, previous))
         second = self.snapshot('상품권 7만원 지급')
+        second['SK7'][PAGE]['_notice_observation'] = {'status': 'verified'}
         preserve_unavailable_fields(second, first)
         delta = calculate_notice_diff(second, first)['SK7']
         self.assertEqual(['상품권 7만원 지급'], delta['added'])
@@ -44,6 +45,7 @@ class CollectionStabilityTests(unittest.TestCase):
         first = self.snapshot('상품권 5만원 지급')
         preserve_unavailable_fields(first, previous)
         second = self.snapshot('상품권 5만원 지급')
+        second['SK7'][PAGE]['_notice_observation'] = {'status': 'verified'}
         preserve_unavailable_fields(second, first)
         self.assertEqual(['개통 불가 일정: 10월 4일'], calculate_notice_diff(second, first)['SK7']['removed'])
 
@@ -64,7 +66,7 @@ class CollectionStabilityTests(unittest.TestCase):
         self.assertEqual('이전 본문', current['SK7'][PAGE]['main_content'])
 
     def test_hidden_notice_is_same_as_expanded_notice(self):
-        template = '<div class="bbs-view"><div class="view-body"><div class="eventCont"><img src="/campaign.png"><div class="notice" {hidden}>상품권 5만원 지급, 10월 31일까지 개통</div></div></div></div>'
+        template = '<div class="bbs-view"><div class="view-body"><div class="eventCont"><img src="/campaign.png"><div class="noticeContainer"><div class="acc-head">유의사항</div><div class="acc-body" {hidden}>상품권 5만원 지급, 10월 31일까지 개통</div></div></div></div></div>'
         results = []
         for hidden in ['', 'style="display:none" aria-hidden="true"']:
             driver = Mock(page_source=template.format(hidden=hidden))

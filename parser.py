@@ -380,6 +380,8 @@ PERIOD_HINT_RE = re.compile(r'기간|기한|까지|부터|종료|시작|지급�
 
 def _short_notice_change(changes):
     """A date-only edit becomes a compact old→new summary."""
+    if changes.get('review_required'):
+        return '수집범위 교정 포함·조건 변경 확인 필요'
     added, removed = changes.get('added', []), changes.get('removed', [])
     old_sources = changes.get('removed_sources', {})
     new_sources = changes.get('added_sources', {})
@@ -470,6 +472,11 @@ def format_slack_report(total_change, event_details, notice_changes, warnings=No
                 f'⚠️ 수집 점검 {len(warnings)}건 '
                 '<https://github.com/rodolfochoi911-lgtm/competitor-monitor/actions|로그>'
             )
+            # A retained value is not evidence of no change. Show unresolved
+            # notice risk in the message instead of burying it in a log count.
+            notice_risks = [w for w in warnings if '유의사항 미확인' in w]
+            for warning in notice_risks[:3]:
+                lines.append('• ' + warning)
 
     lines += ['', f'대시보드: <{dashboard_url}|열기>']
     return '\n'.join(lines)

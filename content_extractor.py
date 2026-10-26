@@ -10,6 +10,7 @@ import re
 import time
 from bs4 import BeautifulSoup, NavigableString, Comment
 from promotion_noise import stable_text, COUNTER_SELECTORS
+from notice_regions import extract_regions, region_spec, region_text
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -116,6 +117,20 @@ def _is_inline_expander(el):
 def _safe_click(driver, el) -> bool:
     if el.get_attribute('aria-expanded') == 'true':
         return False
+    # SK7 puts expanded state on the sibling dd, not the button. Its
+    # already-open button is labelled '닫기'; clicking it closes valid terms.
+    if (el.get_attribute('title') or '').strip() == '닫기':
+        return False
+    if el.tag_name in ('div', 'section', 'dl'):
+        # data-accordion containers are not toggles. Clicking their centre
+        # depends on layout and can hit an arbitrary descendant button.
+        return False
+    try:
+        panel = el.find_element(By.XPATH, "ancestor::dt[1]/following-sibling::dd[1]")
+        if panel.get_attribute('aria-expanded') == 'true':
+            return False
+    except Exception:
+        pass
     if not _is_inline_expander(el):
         return False
     try:
@@ -461,18 +476,58 @@ def extract_main_content(soup: BeautifulSoup) -> str:
 def extract_page_content(driver, url: str) -> dict:
     empty = {"main_content": "", "notice": "", "full_text": "", "accordion_clicked": 0}
     try:
-        acc_clicked = wait_and_expand(driver)
+        # Known sites embed the complete panel text in the DOM. Do not toggle
+        # those panels: CSS/ARIA state differs by site and is not completeness.
+        regions = None
+        if region_spec(url):
+            last, stable = None, 0
+            def regions_ready(d):
+                nonlocal last, stable, regions
+                regions = extract_regions(d.page_source, url, region_text)
+                fingerprint = repr(regions.get('_notice_regions'))
+                stable = stable + 1 if fingerprint == last else 0
+                last = fingerprint
+                return regions['_notice_complete'] and stable >= 2
+            try:
+                WebDriverWait(driver, 8, poll_frequency=0.4).until(regions_ready)
+            except TimeoutException:
+                # Preserve partial observations for diagnosis; never call them complete.
+                if regions is not None:
+                    regions['_notice_complete'] = False
+            acc_clicked = 0
+        else:
+            acc_clicked = wait_and_expand(driver)
 
         soup = BeautifulSoup(driver.page_source, 'html.parser')
+        notice_scope = ''
         is_sk7 = 'www.sk7mobile.com/' in url
         if is_sk7:
             detail = soup.select_one('.bbs-view')
             if detail is not None:
                 soup = BeautifulSoup(str(detail), 'html.parser')
                 remove_sk7_user_reviews(soup)
+                notice_scope = '.bbs-view'
+        else:
+            for selector in MAIN_CONTENT_SELECTORS:
+                detail = soup.select_one(selector)
+                if detail is not None:
+                    soup = BeautifulSoup(str(detail), 'html.parser')
+                    notice_scope = selector
+                    break
         # Collapsed terms remain valid content even when their panel is hidden.
         notice_soup = remove_noise_elements(BeautifulSoup(str(soup), 'html.parser'), preserve_collapsed=True)
+        # Dialogs and unused templates are not collapsed campaign terms.
+        for el in notice_soup.select('template, [role="dialog"], [aria-modal="true"]'):
+            el.decompose()
         notice = extract_notice_section(notice_soup)
+        missing_panels = False
+        for control in notice_soup.select('[aria-controls]'):
+            if not any(word in control.get_text(' ', strip=True) for word in NOTICE_KEYWORDS):
+                continue
+            for target in control.get('aria-controls', '').split():
+                panel = notice_soup.find(id=target)
+                if panel is None or not panel.get_text(strip=True):
+                    missing_panels = True
         soup = remove_noise_elements(soup)
         campaign = soup.select_one('.view-body .eventCont') if is_sk7 else None
         image_campaign = bool(campaign is not None and campaign.select_one("img[src], img[data-src]"))
@@ -494,13 +549,20 @@ def extract_page_content(driver, url: str) -> dict:
             parts.append(f"[유의사항]\n{notice}")
         full_text = '\n\n'.join(parts)
 
-        return {
+        result = {
+            '_notice_scope': notice_scope,
+            # Empty or unknown-scope observations require review, never deletion.
+            '_notice_complete': bool(notice_scope and notice and not missing_panels and not notice_soup.select('[aria-busy="true"], .loading, .spinner')),
             "_body_status":      "image_only" if image_campaign and not main_content else ("text" if main_content else "unavailable"),
             "main_content":      main_content,
             "notice":            notice,
             "full_text":         full_text,
             "accordion_clicked": acc_clicked,
         }
+        if regions is not None:
+            result.update(regions)
+            result['full_text'] = '\n\n'.join(filter(None, [main_content, regions['notice']]))
+        return result
 
     except Exception as e:
         print(f"   ⚠️ 콘텐츠 추출 실패 [{url[:50]}]: {e}")

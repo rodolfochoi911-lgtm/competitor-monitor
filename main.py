@@ -24,6 +24,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.common.exceptions import TimeoutException, UnexpectedAlertPresentException, NoAlertPresentException, ElementClickInterceptedException, StaleElementReferenceException
 
 from content_extractor import extract_page_content
+from notice_observation import collect_verified_notice
 
 # =========================================================
 # 설정
@@ -331,7 +332,7 @@ def visit_detail_pages(driver, targets: dict, site_name: str) -> dict:
         try:
             open_detail_page(driver, url, site_name)
 
-            content_data = extract_page_content(driver, url)
+            content_data = collect_verified_notice(driver, url, extract_page_content)
 
             # ── 제목 추출 ──────────────────────
             title = ""
@@ -374,6 +375,7 @@ def visit_detail_pages(driver, targets: dict, site_name: str) -> dict:
                 "main_content": content_data["main_content"],
                 "notice":       content_data["notice"],
                 "full_text":    content_data["full_text"],
+                "_notice_observation": content_data['_notice_observation'],
             }
 
             # Read the actual detail images, not just the list thumbnail URL.
@@ -476,6 +478,15 @@ def _extract_skylife_detail_content(driver):
 
     notice_text = ' | '.join(filter(None, notice_parts))
     return main_content, notice_text
+
+
+def _skylife_observation(driver, url):
+    body, notice = _extract_skylife_detail_content(driver)
+    regions = driver.find_elements(By.CSS_SELECTOR, 'div[role="region"][data-state="open"]')
+    closed = driver.find_elements(By.CSS_SELECTOR, 'button[data-radix-collection-item][data-state="closed"]')
+    return {'main_content': body, 'notice': notice, 'full_text': body + '\n\n' + notice,
+            '_notice_scope': 'skylife:accordion',
+            '_notice_complete': bool(notice and regions and not closed)}
 
 
 def crawl_skylife(driver) -> dict:
@@ -588,7 +599,8 @@ def crawl_skylife(driver) -> dict:
                 if not title or any(b in title for b in EXCLUDE_TITLE_KEYWORDS):
                     continue
 
-                main_content, notice = _extract_skylife_detail_content(driver)
+                observed = collect_verified_notice(driver, detail_url, _skylife_observation)
+                main_content, notice = observed['main_content'], observed['notice']
                 full_text = f"{main_content}\n\n{notice}".strip()
 
                 result[detail_url] = {
@@ -596,6 +608,7 @@ def crawl_skylife(driver) -> dict:
                     "img":          thumb,
                     "main_content": main_content[:50000],
                     "notice":       notice[:50000],
+                    "_notice_observation": observed['_notice_observation'],
                     "full_text":    full_text[:50000],
                 }
                 print(f"   ✓ [스카이라이프] {title[:30]} | 본문 {len(main_content)}자 | 유의사항 {len(notice)}자")
