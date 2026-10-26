@@ -140,7 +140,7 @@ class PromotionRegressionTests(unittest.TestCase):
         validate_snapshot(snapshot, previous)
         self.assertEqual({'B'}, set(successful_snapshot(snapshot)))
         self.assertEqual({'B'}, set(parser.calculate_changes(snapshot, previous)[1]))
-        self.assertEqual({'B'}, set(calculate_notice_diff(snapshot, previous)))
+        self.assertEqual({}, calculate_notice_diff(snapshot, previous))  # New/ended events are reported separately.
         self.assertNotIn('_collection_error', previous['A']['old'])
         self.assertEqual(1, len(collection_warnings(snapshot)))
         # Consecutive failures retain the baseline; recovery compares to it.
@@ -238,10 +238,12 @@ class PromotionRegressionTests(unittest.TestCase):
         result = parser.collect_unique_notices({'a': {'notice': text}, 'b': {'notice': text}})
         self.assertEqual(1, len(result))
 
-    def test_notice_move_between_events_is_not_a_change(self):
+    def test_notice_move_between_events_preserves_event_sources(self):
         old = {'company': {'a': {'notice': '5만원 지급'}, 'b': {'notice': ''}}}
         new = {'company': {'a': {'notice': ''}, 'b': {'notice': '5만원 지급'}}}
-        self.assertEqual({}, calculate_notice_diff(new, old))
+        diff = calculate_notice_diff(new, old)['company']
+        self.assertEqual('a', diff['removed_sources']['5만원 지급']['url'])
+        self.assertEqual('b', diff['added_sources']['5만원 지급']['url'])
 
     def test_views_and_search_dates_are_excluded_from_notice_diff(self):
         old = {'A': {'u': {'notice': '조회수 123\n검색일 2026-09-09\n상품권 3만원 지급'}}}
@@ -250,7 +252,7 @@ class PromotionRegressionTests(unittest.TestCase):
 
     def test_amount_notice_change_is_detected_without_event_label(self):
         old = {'A': {'u1': {'title': '행사명', 'notice': '상품권 3만원 지급'}}}
-        new = {'A': {'u2': {'title': '다른 행사명', 'notice': '상품권 5만원 지급'}}}
+        new = {'A': {'u1': {'title': '행사명', 'notice': '상품권 5만원 지급'}}}
         diff = calculate_notice_diff(new, old)['A']
         self.assertEqual(['상품권 5만원 지급'], diff['added'])
         self.assertEqual(['상품권 3만원 지급'], diff['removed'])
@@ -360,7 +362,7 @@ class PromotionRegressionTests(unittest.TestCase):
         companies = ['SKT 다이렉트', 'KTM 모바일', 'U+ 유모바일', '스카이라이프', '헬로모바일', 'SK 7세븐모바일']
         previous = {name: {'u': {'title': name, 'main_content': '이전 본문', 'notice': '이전 조건'}} for name in companies}
         def crawl(driver, company):
-            return {'u': {'title': company['name'], 'main_content': '' if company['name'] == companies[0] else '갱신 본문', 'notice': '갱신 조건'}}
+            return {'u': {'title': company['name'], 'main_content': '' if company['name'] == companies[0] else '갱신 본문', 'notice': '갱신 조건', '_notice_observation': {'status': 'verified'}}}
         with tempfile.TemporaryDirectory() as temp:
             Path(temp, 'data_20260908_000000.json').write_text(json.dumps(previous), encoding='utf-8')
             with patch.object(main, 'DATA_DIR', temp), patch.object(main, 'FILE_TIMESTAMP', '20260908_010000'), patch.object(main, 'setup_driver', return_value=Mock()), patch.object(main, 'crawl_site_logic', side_effect=crawl):
