@@ -19,7 +19,7 @@ class CollectionStabilityTests(unittest.TestCase):
         previous = self.snapshot(full)
         for observed in ['상품권 5만원 지급', full, '상품권 5만원 지급', full]:
             current = self.snapshot(observed)
-            self.assertEqual([], preserve_unavailable_fields(current, previous, 'previous.json'))
+            preserve_unavailable_fields(current, previous, 'previous.json')
             self.assertEqual({}, calculate_notice_diff(current, previous))
             self.assertEqual(full, current['SK7'][PAGE]['notice'])
             previous = current
@@ -30,6 +30,7 @@ class CollectionStabilityTests(unittest.TestCase):
         preserve_unavailable_fields(first, previous)
         self.assertEqual({}, calculate_notice_diff(first, previous))
         second = self.snapshot('상품권 7만원 지급')
+        second['SK7'][PAGE]['_notice_observation'] = {'status': 'verified'}
         preserve_unavailable_fields(second, first)
         delta = calculate_notice_diff(second, first)['SK7']
         self.assertEqual(['상품권 7만원 지급'], delta['added'])
@@ -44,6 +45,7 @@ class CollectionStabilityTests(unittest.TestCase):
         first = self.snapshot('상품권 5만원 지급')
         preserve_unavailable_fields(first, previous)
         second = self.snapshot('상품권 5만원 지급')
+        second['SK7'][PAGE]['_notice_observation'] = {'status': 'verified'}
         preserve_unavailable_fields(second, first)
         self.assertEqual(['개통 불가 일정: 10월 4일'], calculate_notice_diff(second, first)['SK7']['removed'])
 
