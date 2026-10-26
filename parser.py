@@ -380,6 +380,8 @@ PERIOD_HINT_RE = re.compile(r'기간|기한|까지|부터|종료|시작|지급�
 
 def _short_notice_change(changes):
     """A date-only edit becomes a compact old→new summary."""
+    if changes.get('review_required'):
+        return '수집범위 교정 포함·조건 변경 확인 필요'
     added, removed = changes.get('added', []), changes.get('removed', [])
     old_sources = changes.get('removed_sources', {})
     new_sources = changes.get('added_sources', {})

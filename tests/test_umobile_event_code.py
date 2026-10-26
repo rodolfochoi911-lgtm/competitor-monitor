@@ -50,11 +50,11 @@ class UMobileEventCodeTests(unittest.TestCase):
         driver = Mock()
         driver.page_source = (
             '<main><div class="event-detail"><h2>유의사항</h2>'
-            '<section class="event-terms">'
-            '<button>이벤트코드 혜택 유의사항</button>'
+            '<section class="template-info unit-origin">'
+            '<button class="acc-trigger">이벤트코드 혜택 유의사항</button><div class="acc-conts">'
             '<ul><li>이벤트코드 : 해피할로윈</li>'
             '<li>이벤트 기간 : 10월 15일 ~ 10월 19일까지</li></ul>'
-            '</section></div></main>'
+            '</div></section></div></main>'
         )
         with patch("content_extractor.wait_and_expand", return_value=1):
             result = extract_page_content(driver, URL)

@@ -3,6 +3,7 @@ import re
 import hashlib
 import copy
 import json
+from collections import Counter
 from pathlib import Path
 from bs4 import BeautifulSoup
 from promotion_noise import stable_text
@@ -123,14 +124,16 @@ def calculate_notice_diff(current, previous):
     result = {}
     for company in sorted(set(current) | set(previous)):
         before_sources, after_sources = {}, {}
+        review_required = False
         # Compare the same event; another event retaining identical terms must
         # not hide this event's removal. New/ended events have their own report.
         for url in set(current.get(company, {})) & set(previous.get(company, {})):
             old, new = previous[company][url], current[company][url]
             if new.get('_notice_pending'):
                 continue
-            before = all_notice_lines(old.get('notice'))
-            after = all_notice_lines(new.get('notice'))
+            review_required = review_required or bool(new.get('_notice_transition'))
+            before = notice_line_counts(old.get('notice'))
+            after = notice_line_counts(new.get('notice'))
             for line in before - after:
                 before_sources[line] = {'url': url, 'title': old.get('title', '')}
             for line in after - before:
@@ -141,6 +144,7 @@ def calculate_notice_diff(current, previous):
             result[company] = {
                 'added': added, 'removed': removed,
                 'total': len(added) + len(removed),
+                'review_required': review_required,
                 'added_sources': {line: after_sources[line] for line in added},
                 'removed_sources': {line: before_sources[line] for line in removed},
             }
@@ -149,9 +153,13 @@ def calculate_notice_diff(current, previous):
 
 def all_notice_lines(value):
     """Compare contractual prose including exclusions without numbers."""
-    return {re.sub(r'\s+', ' ', line).strip() for line in stable_text(value).splitlines()
+    return set(notice_line_counts(value))
+
+
+def notice_line_counts(value):
+    return Counter(re.sub(r'\s+', ' ', line).strip() for line in stable_text(value).splitlines()
             if line.strip() and line.strip() not in {'유의사항', '상세열기', '상세 열기'}
-            and not NOTICE_NOISE_RE.search(line)}
+            and not NOTICE_NOISE_RE.search(line))
 
 
 def validate_snapshot(current, previous=None):
@@ -195,6 +203,7 @@ def preserve_unavailable_fields(current, previous, previous_snapshot=''):
                     retained[field] = old.get('_retained_fields', {}).get(field) or previous_snapshot
             if retained:
                 event['_retained_fields'] = retained
+            if retained or event.get('_notice_pending'):
                 event['full_text'] = '\n\n'.join(filter(None, [event.get('main_content'), event.get('notice')]))
     return collection_warnings(current)
 
@@ -211,8 +220,8 @@ def collection_warnings(data):
                 pending = event['_notice_pending']
                 risk = '변경 후보 있음' if pending.get('changed') else '현재 원문 검증 실패'
                 if pending.get('changed'):
-                    before = all_notice_lines(pending.get('baseline'))
-                    after = all_notice_lines(pending.get('observed'))
+                    before = notice_line_counts(pending.get('baseline'))
+                    after = notice_line_counts(pending.get('observed'))
                     removed = ' / '.join(sorted(before - after))[:100] or '(없음)'
                     added = ' / '.join(sorted(after - before))[:100] or '(수집되지 않음)'
                     risk += f'; {removed} → {added}'

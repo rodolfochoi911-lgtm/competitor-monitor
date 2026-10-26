@@ -10,6 +10,7 @@ import re
 import time
 from bs4 import BeautifulSoup, NavigableString, Comment
 from promotion_noise import stable_text, COUNTER_SELECTORS
+from notice_regions import extract_regions, region_spec, region_text
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -475,7 +476,27 @@ def extract_main_content(soup: BeautifulSoup) -> str:
 def extract_page_content(driver, url: str) -> dict:
     empty = {"main_content": "", "notice": "", "full_text": "", "accordion_clicked": 0}
     try:
-        acc_clicked = wait_and_expand(driver)
+        # Known sites embed the complete panel text in the DOM. Do not toggle
+        # those panels: CSS/ARIA state differs by site and is not completeness.
+        regions = None
+        if region_spec(url):
+            last, stable = None, 0
+            def regions_ready(d):
+                nonlocal last, stable, regions
+                regions = extract_regions(d.page_source, url, region_text)
+                fingerprint = repr(regions.get('_notice_regions'))
+                stable = stable + 1 if fingerprint == last else 0
+                last = fingerprint
+                return regions['_notice_complete'] and stable >= 2
+            try:
+                WebDriverWait(driver, 8, poll_frequency=0.4).until(regions_ready)
+            except TimeoutException:
+                # Preserve partial observations for diagnosis; never call them complete.
+                if regions is not None:
+                    regions['_notice_complete'] = False
+            acc_clicked = 0
+        else:
+            acc_clicked = wait_and_expand(driver)
 
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         notice_scope = ''
@@ -528,7 +549,7 @@ def extract_page_content(driver, url: str) -> dict:
             parts.append(f"[유의사항]\n{notice}")
         full_text = '\n\n'.join(parts)
 
-        return {
+        result = {
             '_notice_scope': notice_scope,
             # Empty or unknown-scope observations require review, never deletion.
             '_notice_complete': bool(notice_scope and notice and not missing_panels and not notice_soup.select('[aria-busy="true"], .loading, .spinner')),
@@ -538,6 +559,10 @@ def extract_page_content(driver, url: str) -> dict:
             "full_text":         full_text,
             "accordion_clicked": acc_clicked,
         }
+        if regions is not None:
+            result.update(regions)
+            result['full_text'] = '\n\n'.join(filter(None, [main_content, regions['notice']]))
+        return result
 
     except Exception as e:
         print(f"   ⚠️ 콘텐츠 추출 실패 [{url[:50]}]: {e}")

@@ -66,7 +66,7 @@ class CollectionStabilityTests(unittest.TestCase):
         self.assertEqual('이전 본문', current['SK7'][PAGE]['main_content'])
 
     def test_hidden_notice_is_same_as_expanded_notice(self):
-        template = '<div class="bbs-view"><div class="view-body"><div class="eventCont"><img src="/campaign.png"><div class="notice" {hidden}>상품권 5만원 지급, 10월 31일까지 개통</div></div></div></div>'
+        template = '<div class="bbs-view"><div class="view-body"><div class="eventCont"><img src="/campaign.png"><div class="noticeContainer"><div class="acc-head">유의사항</div><div class="acc-body" {hidden}>상품권 5만원 지급, 10월 31일까지 개통</div></div></div></div></div>'
         results = []
         for hidden in ['', 'style="display:none" aria-hidden="true"']:
             driver = Mock(page_source=template.format(hidden=hidden))

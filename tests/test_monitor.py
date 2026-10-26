@@ -161,7 +161,7 @@ class PromotionRegressionTests(unittest.TestCase):
         def crawl(driver, company):
             if company['name'] == names[0]:
                 raise RuntimeError('detail timeout')
-            return {'new': {'title': company['name'], 'notice': '상품권 50,000원을 지급합니다.'}}
+            return {'new': {'title': company['name'], 'notice': '상품권 50,000원을 지급합니다.', '_notice_observation': {'status': 'verified', 'version': 2}}}
         with tempfile.TemporaryDirectory() as temp:
             old_cwd = os.getcwd()
             try:

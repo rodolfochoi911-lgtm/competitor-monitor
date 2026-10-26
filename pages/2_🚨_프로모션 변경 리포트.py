@@ -383,6 +383,8 @@ for company in target_companies:
     removed = company_notice.get("removed", [])
     if added or removed:
         st.markdown(f"### 📝 유의사항 변경 (추가 {len(added)}줄 / 삭제 {len(removed)}줄)")
+        if company_notice.get('review_required'):
+            st.info('수집 범위가 바뀐 첫 비교입니다. 아래 차이에는 수집값 교정이 포함될 수 있으므로 실제 행사 조건 변경인지 확인해 주세요.')
         if added:
             for sentence in added:
                 st.markdown(
