@@ -6,9 +6,9 @@ import json
 from collections import Counter
 from pathlib import Path
 from bs4 import BeautifulSoup
-from promotion_noise import stable_text
+from promotion_noise import stable_text, is_error_title
 
-MONITOR_VERSION = 3
+MONITOR_VERSION = 4
 
 
 def clean_text(value):
@@ -30,6 +30,8 @@ def normalized_body(value):
 
 
 def detect_changes(old, new):
+    if new.get('_detail_collection_error'):
+        return {}
     changes = {}
     for field in ('title', 'img', 'main_content', 'event_period'):
         before, after = old.get(field, '') or '', new.get(field, '') or ''
@@ -48,6 +50,8 @@ def detect_changes(old, new):
             changed = bool(before and after) and normalized_body(before) != normalized_body(after)
         else:
             changed = normalized_body(before) != normalized_body(after)
+            if field == 'title' and is_error_title(before):
+                changed = False  # A recovered error heading is not a promotion edit.
         if changed:
             changes[field] = {'old': before, 'new': after}
 
@@ -129,6 +133,8 @@ def calculate_notice_diff(current, previous):
         # not hide this event's removal. New/ended events have their own report.
         for url in set(current.get(company, {})) & set(previous.get(company, {})):
             old, new = previous[company][url], current[company][url]
+            if new.get('_detail_collection_error'):
+                continue
             if new.get('_notice_pending'):
                 continue
             review_required = review_required or bool(new.get('_notice_transition'))
@@ -182,6 +188,11 @@ def preserve_unavailable_fields(current, previous, previous_snapshot=''):
     for company, events in current.items():
         for url, event in events.items():
             old = previous.get(company, {}).get(url, {})
+            if event.get('_detail_collection_error') and old:
+                restored = copy.deepcopy(old)
+                restored['_detail_collection_error'] = event['_detail_collection_error']
+                events[url] = restored
+                continue
             retained = {}
             for field in ('main_content', 'notice', 'detail_image_hashes', 'event_period'):
                 if field == 'detail_image_hashes':
@@ -211,7 +222,7 @@ def preserve_unavailable_fields(current, previous, previous_snapshot=''):
 def collection_warnings(data):
     """One actionable collection status per company; provenance stays in JSON."""
     warnings = []
-    labels = {'main_content': '본문', 'notice': '유의사항', 'event_period': '기간'}
+    labels = {'detail': '상세 수집 실패', 'main_content': '본문', 'notice': '유의사항', 'event_period': '기간'}
     for company, events in sorted(data.items()):
         if any(event.get('_collection_error') for event in events.values()):
             warnings.append(f'{company}: 수집 실패로 이번 변경 집계에서 제외')
@@ -219,6 +230,9 @@ def collection_warnings(data):
         counts = Counter()
         candidates = 0
         for event in events.values():
+            if event.get('_detail_collection_error'):
+                counts.update(['detail'])
+                continue
             fields = set(event.get('_retained_fields', {})) & set(labels)
             pending = event.get('_notice_pending')
             if pending:

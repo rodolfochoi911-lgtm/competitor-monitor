@@ -2,7 +2,7 @@ import importlib
 import monitor_core
 
 # A running Streamlit process can retain the module from before deployment.
-if (getattr(monitor_core, 'MONITOR_VERSION', 0) != 3
+if (getattr(monitor_core, 'MONITOR_VERSION', 0) != 4
         or not all(hasattr(monitor_core, name) for name in ('snapshot_warnings', 'comparison_snapshots'))):
     importlib.reload(monitor_core)
 from monitor_core import detect_changes, calculate_notice_diff, snapshot_warnings, comparison_snapshots

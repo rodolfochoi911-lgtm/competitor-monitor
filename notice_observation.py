@@ -19,6 +19,7 @@ def collect_verified_notice(driver, url, extract, max_attempts=3):
                              'diagnostics': result.get('_notice_diagnostics', {}),
                              'observed_at': datetime.now(timezone.utc).isoformat()})
         except Exception as error:
+            result = {}
             attempts.append({'value': '', 'complete': False, 'error': str(error)})
         if len(attempts) >= 2:
             a, b = attempts[-2:]
@@ -30,6 +31,8 @@ def collect_verified_notice(driver, url, extract, max_attempts=3):
                 and attempts[-1].get('scope') == attempts[-2].get('scope')
                 and normalized_body(attempts[-1]['value']) == normalized_body(attempts[-2]['value']))
     if not result:
+        if attempts and 'error' in attempts[-1]:
+            raise RuntimeError('상세 수집 재시도 실패: ' + attempts[-1]['error'])
         result = {'main_content': '', 'notice': '', 'full_text': ''}
     result['_notice_observation'] = {'version': 2, 'status': 'verified' if verified else 'unconfirmed',
                                      'attempts': attempts}
