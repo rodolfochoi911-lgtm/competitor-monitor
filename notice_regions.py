@@ -28,6 +28,7 @@ def region_spec(url):
         'www.uplusumobile.com': ('umobile', 'section.template-info.unit-origin'),
         'www.ktmmobile.com': ('ktm', '.attention-box'),
         'shop.tworld.co.kr': ('tdirect', '.arcBoxWrap'),
+        'direct.lghellovision.net': ('hello', '.boardView .substance .noticeWrapNew, .boardView .substance .viewNotice'),
     }.get(host)
 
 
@@ -79,6 +80,9 @@ def extract_regions(html, url, clean_text):
                             '[aria-modal="true"], template, script, style, noscript'):
         node.decompose()
     roots = soup.select(selector)
+    # A viewNotice can be nested within noticeWrapNew. Read each notice once.
+    if name == 'hello':
+        roots = [r for r in roots if not any(parent in roots for parent in r.parents)]
     if name == 'ktm':
         roots = [r for r in roots if any('유의사항' in h.get_text() for h in r.select('h2,h3,h4'))]
     if name == 'umobile':
@@ -89,7 +93,11 @@ def extract_regions(html, url, clean_text):
     for root_index, root in enumerate(roots):
         if root.get('aria-busy') == 'true' or root.select('[aria-busy="true"]'):
             missing.append(f'{root_index}:loading')
-        if name == 'umobile':
+        if name == 'hello':
+            if len(clean_text(root)) < 10:
+                missing.append(f'{root_index}:empty')
+            panels.append((str(root_index), '유의사항', root))
+        elif name == 'umobile':
             # This official section also has flat and nested notice templates.
             # Read the section, not an assumed one-button/one-panel count.
             for index, panel in enumerate(root.select('.acc-conts')):
