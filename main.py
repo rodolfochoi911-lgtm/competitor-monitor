@@ -377,6 +377,9 @@ def visit_detail_pages(driver, targets: dict, site_name: str) -> dict:
                 "full_text":    content_data["full_text"],
                 "_notice_observation": content_data['_notice_observation'],
             }
+            for key in ('_content_version', '_body_status'):
+                if key in content_data:
+                    final_data[url][key] = content_data[key]
 
             # Read the actual detail images, not just the list thumbnail URL.
             # SK7 is scoped first to avoid slowing down other competitors.

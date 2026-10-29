@@ -53,11 +53,18 @@ def retain_unconfirmed_notice(event, old, previous_snapshot):
         if baseline_version is None:
             baseline_version = old_observation.get('version') if old_observation.get('status') == 'verified' else None
         event['_notice_baseline_version'] = observation.get('version', 1)
-        if old and observation.get('version') == 2 and baseline_version != 2:
+        scope = (observation.get('attempts') or [{}])[-1].get('scope')
+        old_scope = old.get('_notice_baseline_scope')
+        if old_scope is None and old_observation.get('status') == 'verified':
+            old_scope = (old_observation.get('attempts') or [{}])[-1].get('scope')
+        event['_notice_baseline_scope'] = scope
+        if old and observation.get('version') == 2 and (baseline_version != 2 or scope != old_scope):
             event['_notice_transition'] = True
         return False
     if old.get('_notice_baseline_version') is not None:
         event['_notice_baseline_version'] = old['_notice_baseline_version']
+    if old.get('_notice_baseline_scope') is not None:
+        event['_notice_baseline_scope'] = old['_notice_baseline_scope']
     event['_notice_pending'] = {'baseline': old.get('notice', ''),
                                'observed': event.get('notice', ''),
                                'since': old.get('_notice_pending', {}).get('since') or previous_snapshot,

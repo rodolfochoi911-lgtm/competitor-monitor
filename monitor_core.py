@@ -8,7 +8,7 @@ from pathlib import Path
 from bs4 import BeautifulSoup
 from promotion_noise import stable_text
 
-MONITOR_VERSION = 2
+MONITOR_VERSION = 3
 
 
 def clean_text(value):
@@ -209,29 +209,30 @@ def preserve_unavailable_fields(current, previous, previous_snapshot=''):
 
 
 def collection_warnings(data):
-    labels = {'main_content': '본문', 'notice': '유의사항', 'detail_image_hashes': '상세 이미지', 'event_period': '이벤트 기간'}
+    """One actionable collection status per company; provenance stays in JSON."""
     warnings = []
+    labels = {'main_content': '본문', 'notice': '유의사항', 'event_period': '기간'}
     for company, events in sorted(data.items()):
         if any(event.get('_collection_error') for event in events.values()):
-            warnings.append(f'{company}: 수집 실패로 이번 결과 및 변경 집계에서 제외 (이전 데이터는 비교 기준으로 보관)')
+            warnings.append(f'{company}: 수집 실패로 이번 변경 집계에서 제외')
             continue
-        for url, event in sorted(events.items()):
-            if event.get('_notice_pending'):
-                pending = event['_notice_pending']
-                risk = '변경 후보 있음' if pending.get('changed') else '현재 원문 검증 실패'
-                if pending.get('changed'):
-                    before = notice_line_counts(pending.get('baseline'))
-                    after = notice_line_counts(pending.get('observed'))
-                    removed = ' / '.join(sorted(before - after))[:100] or '(없음)'
-                    added = ' / '.join(sorted(after - before))[:100] or '(수집되지 않음)'
-                    risk += f'; {removed} → {added}'
-                warnings.append(f"{company} / {event.get('title', url)}: 유의사항 미확인 ({risk}), 마지막 기준 {pending.get('since', '')} ({url})")
-            retained = {k: v for k, v in event.get('_retained_fields', {}).items()
-                        if k != 'detail_image_hashes' and not (k == 'notice' and event.get('_notice_pending'))}
-            if retained:
-                fields = ', '.join(labels.get(field, field) for field in retained)
-                warnings.append(f"{company} / {event.get('title', url)}: {fields} 재확인 필요, 이전 수집값 보존 ({url})")
-            # Image diagnostics remain in snapshots/logs, not repeated user alerts.
+        counts = Counter()
+        candidates = 0
+        for event in events.values():
+            fields = set(event.get('_retained_fields', {})) & set(labels)
+            pending = event.get('_notice_pending')
+            if pending:
+                fields.add('notice')
+                # An empty observation is a collection failure, not a policy deletion.
+                if pending.get('changed') and pending.get('observed', '').strip():
+                    candidates += 1
+            counts.update(fields)
+        if counts:
+            detail = ' · '.join(f'{label} {counts[field]}건' for field, label in labels.items() if counts[field])
+            message = f'{company}: 수집 확인 필요 ({detail})'
+            if candidates:
+                message += f' · 유의사항 변경 후보 {candidates}건 검증 중'
+            warnings.append(message)
     return warnings
 
 

@@ -11,6 +11,7 @@ import time
 from bs4 import BeautifulSoup, NavigableString, Comment
 from promotion_noise import stable_text, COUNTER_SELECTORS
 from notice_regions import extract_regions, region_spec, region_text
+from campaign_content import extract_campaign_body
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -498,6 +499,7 @@ def extract_page_content(driver, url: str) -> dict:
         else:
             acc_clicked = wait_and_expand(driver)
 
+        scoped_body = extract_campaign_body(driver.page_source, url)
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         notice_scope = ''
         is_sk7 = 'www.sk7mobile.com/' in url
@@ -562,6 +564,9 @@ def extract_page_content(driver, url: str) -> dict:
         if regions is not None:
             result.update(regions)
             result['full_text'] = '\n\n'.join(filter(None, [main_content, regions['notice']]))
+        if scoped_body is not None:
+            result.update(scoped_body)
+            result['full_text'] = '\n\n'.join(filter(None, [result['main_content'], result['notice']]))
         return result
 
     except Exception as e:
