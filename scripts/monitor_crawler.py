@@ -296,6 +296,16 @@ def analyze_and_notify(p_posts, d_posts):
     with open(history_file, 'w', encoding='utf-8') as f:
         json.dump(history_data, f, ensure_ascii=False, indent=4)
 
+    # 간편유심은 브랜드 SOV와 별도로 집계한다. 띄어 쓴 표기도 포함한다.
+    sim_posts = df[df['title'].str.contains(r'간편\s*유심', regex=True, na=False)]
+    sim_links = [
+        f"  └ <{row['link']}|{row['title']}>"
+        for _, row in sim_posts.iterrows()
+    ]
+    sim_block = f"\n*📌 간편유심 언급 ({len(sim_links)}건)*"
+    if sim_links:
+        sim_block += "\n" + "\n".join(sim_links)
+
     # 슬랙 전송
     seven_block = ""
     if seven_links:
@@ -310,6 +320,7 @@ def analyze_and_notify(p_posts, d_posts):
 
 *📈 브랜드 언급량 (SOV)*
 {sov_msg}{seven_block}
+{sim_block}
 
 *🔥 핫 키워드 (Top 10)*
 {keyword_msg}
