@@ -49,7 +49,7 @@ class UMobileEventCodeTests(unittest.TestCase):
     def test_event_code_and_period_survive_umobile_notice_extraction(self):
         driver = Mock()
         driver.page_source = (
-            '<main><div class="event-detail"><h2>유의사항</h2>'
+            '<main><div class="sub-conts template evt-usim-template"><h2>유의사항</h2>'
             '<section class="template-info unit-origin">'
             '<button class="acc-trigger">이벤트코드 혜택 유의사항</button><div class="acc-conts">'
             '<ul><li>이벤트코드 : 해피할로윈</li>'

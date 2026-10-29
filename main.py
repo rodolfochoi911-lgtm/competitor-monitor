@@ -25,6 +25,7 @@ from selenium.common.exceptions import TimeoutException, UnexpectedAlertPresentE
 
 from content_extractor import extract_page_content
 from notice_observation import collect_verified_notice
+from skylife_content import extract_skylife_content, is_error_title
 
 # =========================================================
 # 설정
@@ -377,7 +378,7 @@ def visit_detail_pages(driver, targets: dict, site_name: str) -> dict:
                 "full_text":    content_data["full_text"],
                 "_notice_observation": content_data['_notice_observation'],
             }
-            for key in ('_content_version', '_body_status'):
+            for key in ('_content_version', '_body_status', 'event_period'):
                 if key in content_data:
                     final_data[url][key] = content_data[key]
 
@@ -412,84 +413,12 @@ def visit_detail_pages(driver, targets: dict, site_name: str) -> dict:
 # 스카이라이프 전용 수집
 # =========================================================
 def _extract_skylife_detail_content(driver):
-    """스카이라이프 상세페이지 아코디언 클릭 및 텍스트 추출"""
-    notice_parts = []
-
-    try:
-        accordion_btns = driver.find_elements(
-            By.CSS_SELECTOR, 'button[data-radix-collection-item][data-state="closed"]'
-        )
-        for btn in accordion_btns:
-            try:
-                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
-                time.sleep(0.3)
-                driver.execute_script("arguments[0].click();", btn)
-                time.sleep(1.0)
-            except Exception:
-                continue
-
-        xpath_btns = driver.find_elements(
-            By.XPATH, '//button[(contains(text(),"안내") or contains(text(),"유의사항")) and @data-state="closed"]'
-        )
-        for btn in xpath_btns:
-            try:
-                driver.execute_script("arguments[0].click();", btn)
-                time.sleep(1.0)
-            except Exception:
-                pass
-
-        open_regions = driver.find_elements(By.CSS_SELECTOR, 'div[role="region"][data-state="open"]')
-        for region in open_regions:
-            text = region.text.strip()
-            if text and text not in notice_parts:
-                notice_parts.append(text)
-
-        nested_btns = driver.find_elements(
-            By.CSS_SELECTOR, 'div[role="region"][data-state="open"] button[data-state="closed"]'
-        )
-        for btn in nested_btns:
-            try:
-                driver.execute_script("arguments[0].click();", btn)
-                time.sleep(0.7)
-                new_regions = driver.find_elements(By.CSS_SELECTOR, 'div[role="region"][data-state="open"]')
-                for r in new_regions:
-                    t = r.text.strip()
-                    if t and t not in notice_parts:
-                        notice_parts.append(t)
-            except Exception:
-                pass
-
-    except Exception as e:
-        print(f"       ⚠️ 아코디언 처리 실패: {e}")
-
-    main_content = ""
-    try:
-        iframes = driver.find_elements(By.CSS_SELECTOR, 'iframe#iframe-promotion')
-        if iframes:
-            srcdoc = iframes[0].get_attribute('srcdoc')
-            if srcdoc:
-                soup = BeautifulSoup(srcdoc, 'html.parser')
-                main_content = soup.get_text(separator=' ', strip=True)
-    except Exception:
-        pass
-
-    if not main_content:
-        try:
-            main_content = driver.find_element(By.TAG_NAME, 'main').text[:2000]
-        except Exception:
-            pass
-
-    notice_text = ' | '.join(filter(None, notice_parts))
-    return main_content, notice_text
+    result = extract_skylife_content(driver, driver.current_url)
+    return result['main_content'], result['notice']
 
 
 def _skylife_observation(driver, url):
-    body, notice = _extract_skylife_detail_content(driver)
-    regions = driver.find_elements(By.CSS_SELECTOR, 'div[role="region"][data-state="open"]')
-    closed = driver.find_elements(By.CSS_SELECTOR, 'button[data-radix-collection-item][data-state="closed"]')
-    return {'main_content': body, 'notice': notice, 'full_text': body + '\n\n' + notice,
-            '_notice_scope': 'skylife:accordion',
-            '_notice_complete': bool(notice and regions and not closed)}
+    return extract_skylife_content(driver, url)
 
 
 def crawl_skylife(driver) -> dict:
@@ -577,47 +506,35 @@ def crawl_skylife(driver) -> dict:
         for detail_url, thumb, list_title in page_links:
             if detail_url in result:
                 continue
+            title = clean_title(list_title)
             try:
                 driver.get(detail_url)
-                time.sleep(2)
-
-                title = ""
-                for sel in ["h1", "h2", ".title", ".tit"]:
-                    try:
-                        els = driver.find_elements(By.CSS_SELECTOR, sel)
-                        for el in els:
-                            t = el.text.strip()
-                            if t and not any(b in t for b in BAD_TITLES):
-                                title = t
-                                break
-                    except Exception:
-                        pass
-                    if title:
-                        break
+                observed = collect_verified_notice(driver, detail_url, _skylife_observation)
+                if not observed.get('_detail_ready'):
+                    raise RuntimeError('이벤트 상세 화면 미확인')
+                # The verified page and list title must never be replaced with an error heading.
                 if not title:
-                    title = list_title or driver.title.strip()
-
-                title = clean_title(title)
-
+                    title = clean_title(driver.title.split('|')[0])
+                if is_error_title(title) or is_error_title(driver.title):
+                    raise RuntimeError('스카이라이프 오류 화면 제목')
                 if not title or any(b in title for b in EXCLUDE_TITLE_KEYWORDS):
                     continue
-
-                observed = collect_verified_notice(driver, detail_url, _skylife_observation)
-                main_content, notice = observed['main_content'], observed['notice']
-                full_text = f"{main_content}\n\n{notice}".strip()
-
                 result[detail_url] = {
-                    "title":        title,
-                    "img":          thumb,
-                    "main_content": main_content[:50000],
-                    "notice":       notice[:50000],
-                    "_notice_observation": observed['_notice_observation'],
-                    "full_text":    full_text[:50000],
+                    'title': title, 'img': thumb,
+                    'main_content': observed['main_content'], 'notice': observed['notice'],
+                    'full_text': observed['full_text'],
+                    '_content_version': observed['_content_version'],
+                    '_body_status': observed['_body_status'],
+                    '_notice_observation': observed['_notice_observation'],
                 }
-                print(f"   ✓ [스카이라이프] {title[:30]} | 본문 {len(main_content)}자 | 유의사항 {len(notice)}자")
-
-            except Exception as e:
-                raise RuntimeError(f"스카이라이프 상세 수집 실패: {detail_url}") from e
+                print(f"   ✓ [스카이라이프] {title[:30]} | 본문 {len(observed['main_content'])}자 | 유의사항 {len(observed['notice'])}자")
+            except Exception as error:
+                # Keep this list URL present so a failed detail is not interpreted as
+                # event termination. Other healthy events remain independently usable.
+                result[detail_url] = {'title': title, 'img': thumb,
+                    '_detail_collection_error': str(error),
+                    '_notice_observation': {'version': 2, 'status': 'unconfirmed', 'attempts': []}}
+                print(f'   ⚠️ [스카이라이프] 상세 확인 실패: {detail_url} [{error}]')
 
     return result
 
@@ -708,7 +625,11 @@ def main():
                     raise RuntimeError('수집 결과 0건')
                 results[comp['name']] = data
                 elapsed = time.time() - comp_start
-                print(f"✅ {comp['name']} 완료 ({len(data)}건, {elapsed:.0f}초)")
+                failed_details = sum(bool(event.get('_detail_collection_error')) for event in data.values())
+                if failed_details:
+                    print(f"⚠️ {comp['name']} 수집 결과 (정상 {len(data) - failed_details}건, 상세 실패 {failed_details}건, {elapsed:.0f}초)")
+                else:
+                    print(f"✅ {comp['name']} 완료 ({len(data)}건, {elapsed:.0f}초)")
             except Exception as e:
                 errors[comp['name']] = f'{type(e).__name__}: {e}'
                 traceback.print_exc()

@@ -256,6 +256,8 @@ def collect_unique_notices(items: dict, company: str = "") -> list:
     all_items = []
 
     for url, info in items.items():
+        if info.get('_detail_collection_error'):
+            continue  # A recovery baseline is not a fresh notice observation.
         raw = (info.get('notice', '') or '').strip()
         if not raw:
             continue

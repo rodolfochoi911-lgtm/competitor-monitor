@@ -2,6 +2,10 @@
 import re
 from bs4 import BeautifulSoup, Comment
 
+
+def is_error_title(value):
+    return bool(re.search(r'Application error:|client-side exception has occurred|Internal Server Error', value or '', re.I))
+
 COUNTERS = re.compile(
     r'(?<![\w])(?:조회\s*수?|views?)\s*[:：]?\s*[\d,]+\s*(?:회|건)?'
     r'|(?<![\w])D\s*[-−–+]\s*\d+\b|(?<![\w])D\s*-?\s*DAY\b'
