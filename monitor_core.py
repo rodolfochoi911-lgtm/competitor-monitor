@@ -1,0 +1,290 @@
+"""Shared change detection for notifications and the dashboard."""
+import re
+import hashlib
+import copy
+import json
+from collections import Counter
+from pathlib import Path
+from bs4 import BeautifulSoup
+from promotion_noise import stable_text, is_error_title
+
+MONITOR_VERSION = 4
+
+
+def clean_text(value):
+    soup = BeautifulSoup(value or '', 'html.parser')
+    for tag in soup(['script', 'style', 'noscript']):
+        tag.decompose()
+    return re.sub(r'\s+', ' ', soup.get_text(' ', strip=True)).strip()
+
+
+BODY_NOISE_RE = re.compile(
+    r'^(?:조회\s*수\s*[:：]?\s*\d+|'
+    r'(?:검색일|수집일|크롤링\s*시각|최종\s*수정일)\s*[:：]?.*)$',
+    re.IGNORECASE,
+)
+
+
+def normalized_body(value):
+    return re.sub(r'\s+', ' ', stable_text(value)).strip()
+
+
+def detect_changes(old, new):
+    if new.get('_detail_collection_error'):
+        return {}
+    changes = {}
+    for field in ('title', 'img', 'main_content', 'event_period'):
+        before, after = old.get(field, '') or '', new.get(field, '') or ''
+        if field == 'img':
+            changed = before != after
+        elif field == 'main_content':
+            # Avoid alerting on a temporary empty extraction.
+            changed = bool(before and after) and normalized_body(before) != normalized_body(after)
+            if old.get('_content_version') != new.get('_content_version'):
+                changed = False  # New scoped extractor establishes its own baseline.
+        elif field == 'event_period':
+            if not before:
+                dates = re.findall(r'20\d{2}-\d{2}-\d{2}', old.get('main_content', '') or '')
+                if len(dates) >= 2:
+                    before = ' ~ '.join(dates[:2])
+            changed = bool(before and after) and normalized_body(before) != normalized_body(after)
+        else:
+            changed = normalized_body(before) != normalized_body(after)
+            if field == 'title' and is_error_title(before):
+                changed = False  # A recovered error heading is not a promotion edit.
+        if changed:
+            changes[field] = {'old': before, 'new': after}
+
+    # Establish baseline on first deployment, rather than alerting for every old event.
+    before_images = old.get('detail_image_hashes')
+    after_images = new.get('detail_image_hashes')
+    if (before_images is not None and after_images is not None and before_images != after_images
+            and old.get('_image_hash_version') == new.get('_image_hash_version')):
+        changes['detail_image_hashes'] = {'old': before_images, 'new': after_images}
+    return changes
+
+
+AMOUNT_NOTICE_RE = re.compile(
+    r'(?:\d[\d,]*(?:\.\d+)?\s*(?:억|만|천)?\s*원|'
+    r'\d[\d,]*(?:\.\d+)?\s*(?:억|만|천)?\s*(?:포인트|point|points|p)\b)',
+    re.IGNORECASE,
+)
+PERCENT_BENEFIT_RE = re.compile(
+    r'\d+(?:\.\d+)?\s*%.*(?:할인|적립|캐시백|환급)|'
+    r'(?:할인|적립|캐시백|환급).*\d+(?:\.\d+)?\s*%'
+)
+
+
+PERIOD_NOTICE_RE = re.compile(
+    r'20\d{2}\s*(?:[./-]|년)\s*\d{1,2}|'
+    r'\d{1,2}\s*월\s*\d{1,2}\s*일|'
+    r'\d{1,2}\s*[./-]\s*\d{1,2}|'
+    r'\d+\s*(?:영업일|개월|달|주|일|시간)\s*(?:간|이내|전|후|동안)?|'
+    r'기간|기한|선정일|발송일|지급일|사용일|적용일|신청일|종료일'
+)
+NOTICE_NOISE_RE = re.compile(
+    r'^(?:조회\s*수|검색일|수집일|크롤링\s*시각|최종\s*수정일)',
+    re.IGNORECASE,
+)
+
+
+EVENT_CODE_NOTICE_RE = re.compile(
+    r'(?:이벤트|프로모션|쿠폰|할인)\s*코드\s*[:：=]\s*\S+', re.IGNORECASE
+)
+
+
+def notice_lines(value):
+    """금액/혜택 및 날짜·기간·기한 관련 유의사항을 반환한다."""
+    soup = BeautifulSoup(stable_text(value), 'html.parser')
+    for tag in soup(['script', 'style', 'noscript']):
+        tag.decompose()
+    footer = {'이용약관', '개인정보처리방침', '개인정보 처리방침', '로그인', '회원가입'}
+    lines = set()
+    for raw_line in soup.get_text('\n', strip=True).splitlines():
+        line = re.sub(r'\s+', ' ', raw_line).strip()
+        if not line or line in footer or NOTICE_NOISE_RE.search(line):
+            continue
+        if (AMOUNT_NOTICE_RE.search(line) or PERCENT_BENEFIT_RE.search(line)
+                or PERIOD_NOTICE_RE.search(line) or EVENT_CODE_NOTICE_RE.search(line)):
+            lines.add(line)
+    return lines
+
+
+def company_notice_sources(data, company):
+    """Keep original event URL/title for Slack while deduplicating company-wide."""
+    sources = {}
+    for url, event in data.get(company, {}).items():
+        for line in notice_lines(event.get('notice')):
+            sources.setdefault(line, {'url': url, 'title': event.get('title', '')})
+    return sources
+
+
+def company_notice_lines(data, company):
+    return set(company_notice_sources(data, company))
+
+
+def calculate_notice_diff(current, previous):
+    current, previous = comparison_snapshots(current, previous)
+    result = {}
+    for company in sorted(set(current) | set(previous)):
+        before_sources, after_sources = {}, {}
+        review_required = False
+        # Compare the same event; another event retaining identical terms must
+        # not hide this event's removal. New/ended events have their own report.
+        for url in set(current.get(company, {})) & set(previous.get(company, {})):
+            old, new = previous[company][url], current[company][url]
+            if new.get('_detail_collection_error'):
+                continue
+            if new.get('_notice_pending'):
+                continue
+            review_required = review_required or bool(new.get('_notice_transition'))
+            before = notice_line_counts(old.get('notice'))
+            after = notice_line_counts(new.get('notice'))
+            for line in before - after:
+                before_sources[line] = {'url': url, 'title': old.get('title', '')}
+            for line in after - before:
+                after_sources[line] = {'url': url, 'title': new.get('title', '')}
+        added = sorted(after_sources)
+        removed = sorted(before_sources)
+        if added or removed:
+            result[company] = {
+                'added': added, 'removed': removed,
+                'total': len(added) + len(removed),
+                'review_required': review_required,
+                'added_sources': {line: after_sources[line] for line in added},
+                'removed_sources': {line: before_sources[line] for line in removed},
+            }
+    return result
+
+
+def all_notice_lines(value):
+    """Compare contractual prose including exclusions without numbers."""
+    return set(notice_line_counts(value))
+
+
+def notice_line_counts(value):
+    return Counter(re.sub(r'\s+', ' ', line).strip() for line in stable_text(value).splitlines()
+            if line.strip() and line.strip() not in {'유의사항', '상세열기', '상세 열기'}
+            and not NOTICE_NOISE_RE.search(line))
+
+
+def validate_snapshot(current, previous=None):
+    """Reject empty/missing company collections before interpreting event termination."""
+    if not current or any(not events for events in current.values()):
+        raise RuntimeError('수집 결과가 비어 있습니다. 정상 데이터와 종료 판정을 보존합니다.')
+    for company, events in (previous or {}).items():
+        if company not in current:
+            raise RuntimeError(f'{company}: 수집 결과 누락')
+
+
+def preserve_unavailable_fields(current, previous, previous_snapshot=''):
+    """Keep last known text on transient empty extraction, with explicit provenance.
+
+    This is not a successful observation of that field. A recovered nonempty value
+    clears the marker naturally because the crawler constructs fresh event records.
+    Missing companies still fail validation; missing URLs are not restored here.
+    """
+    validate_snapshot(current, previous)
+    for company, events in current.items():
+        for url, event in events.items():
+            old = previous.get(company, {}).get(url, {})
+            if event.get('_detail_collection_error') and old:
+                restored = copy.deepcopy(old)
+                restored['_detail_collection_error'] = event['_detail_collection_error']
+                events[url] = restored
+                continue
+            retained = {}
+            for field in ('main_content', 'notice', 'detail_image_hashes', 'event_period'):
+                if field == 'detail_image_hashes':
+                    missing = old.get(field) is not None and event.get(field) is None
+                else:
+                    missing = bool(clean_text(old.get(field))) and not clean_text(event.get(field))
+                if field == 'main_content' and event.get('_body_status') == 'image_only':
+                    # A verified image campaign has no text body to recover.
+                    continue
+                if field == 'notice':
+                    from notice_observation import retain_unconfirmed_notice
+                    missing = retain_unconfirmed_notice(event, old, previous_snapshot)
+                if missing:
+                    event[field] = old[field]
+                    if field == 'detail_image_hashes':
+                        event['_image_hash_version'] = old.get('_image_hash_version')
+                    if field == 'main_content':
+                        event['_content_version'] = old.get('_content_version')
+                    retained[field] = old.get('_retained_fields', {}).get(field) or previous_snapshot
+            if retained:
+                event['_retained_fields'] = retained
+            if retained or event.get('_notice_pending'):
+                event['full_text'] = '\n\n'.join(filter(None, [event.get('main_content'), event.get('notice')]))
+    return collection_warnings(current)
+
+
+def collection_warnings(data):
+    """One actionable collection status per company; provenance stays in JSON."""
+    warnings = []
+    labels = {'detail': '상세 수집 실패', 'main_content': '본문', 'notice': '유의사항', 'event_period': '기간'}
+    for company, events in sorted(data.items()):
+        if any(event.get('_collection_error') for event in events.values()):
+            warnings.append(f'{company}: 수집 실패로 이번 변경 집계에서 제외')
+            continue
+        counts = Counter()
+        candidates = 0
+        for event in events.values():
+            if event.get('_detail_collection_error'):
+                counts.update(['detail'])
+                continue
+            fields = set(event.get('_retained_fields', {})) & set(labels)
+            pending = event.get('_notice_pending')
+            if pending:
+                fields.add('notice')
+                # An empty observation is a collection failure, not a policy deletion.
+                if pending.get('changed') and pending.get('observed', '').strip():
+                    candidates += 1
+            counts.update(fields)
+        if counts:
+            detail = ' · '.join(f'{label} {counts[field]}건' for field, label in labels.items() if counts[field])
+            message = f'{company}: 수집 확인 필요 ({detail})'
+            if candidates:
+                message += f' · 유의사항 변경 후보 {candidates}건 검증 중'
+            warnings.append(message)
+    return warnings
+
+
+def successful_snapshot(data):
+    """Exclude retained company baselines from fresh observations."""
+    return {company: events for company, events in data.items()
+            if events and not any(event.get('_collection_error') for event in events.values())}
+
+
+def comparison_snapshots(current, previous):
+    current = successful_snapshot(current)
+    return current, {company: events for company, events in previous.items() if company in current}
+
+
+def prepare_partial_snapshot(results, previous, errors):
+    """Publish successful companies, carrying failed baselines for recovery only."""
+    successful = {company: events for company, events in results.items() if events and company not in errors}
+    if not successful:
+        raise RuntimeError('모든 회사 수집 실패: 이전 정상 데이터를 유지합니다.')
+    snapshot = copy.deepcopy(successful)
+    for company, events in previous.items():
+        if company not in snapshot and events:
+            snapshot[company] = copy.deepcopy(events)
+            for event in snapshot[company].values():
+                event['_collection_error'] = errors.get(company, '수집 결과 누락')
+    validate_snapshot(snapshot, previous)
+    return snapshot
+
+
+def snapshot_warnings(data, snapshot_path):
+    warnings = collection_warnings(data)
+    status_path = Path(snapshot_path).with_name(Path(snapshot_path).name.replace('data_', 'collection_status_', 1))
+    if status_path.exists():
+        errors = json.loads(status_path.read_text(encoding='utf-8'))
+        for company, error in sorted(errors.items()):
+            if company not in data:
+                warnings.append(f'{company}: 수집 실패로 이번 결과에서 제외 ({error})')
+    return warnings
+
+
+
