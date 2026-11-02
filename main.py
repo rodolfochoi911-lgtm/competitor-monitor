@@ -6,6 +6,7 @@
 import os
 import glob
 from monitor_core import preserve_unavailable_fields, prepare_partial_snapshot
+from monitor_exclusions import is_excluded_event, filter_snapshot
 from detail_image_monitor import hash_detail_images
 from promotion_noise import strip_counters
 import json
@@ -330,6 +331,8 @@ def visit_detail_pages(driver, targets: dict, site_name: str) -> dict:
 
     image_cache = {}  # Shared resources are downloaded once per SK7 crawl.
     for url, info in targets.items():
+        if is_excluded_event(url):
+            continue
         try:
             open_detail_page(driver, url, site_name)
 
@@ -504,6 +507,8 @@ def crawl_skylife(driver) -> dict:
             break
 
         for detail_url, thumb, list_title in page_links:
+            if is_excluded_event(detail_url):
+                continue
             if detail_url in result:
                 continue
             title = clean_title(list_title)
@@ -654,7 +659,7 @@ def main():
     previous = {}
     if previous_files:
         with open(previous_files[-1], encoding='utf-8') as f:
-            previous = json.load(f)
+            previous = filter_snapshot(json.load(f))
     for comp in competitors:
         if not results.get(comp['name']):
             errors.setdefault(comp['name'], '수집 결과 없음')

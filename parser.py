@@ -17,6 +17,7 @@ parser.py
 """
 
 import os
+from monitor_exclusions import filter_snapshot
 from monitor_core import (detect_changes, calculate_notice_diff, validate_snapshot,
                           collection_warnings, notice_lines, comparison_snapshots, snapshot_warnings,
                           EVENT_CODE_NOTICE_RE)
@@ -556,11 +557,11 @@ def run_parser():
 
     file_curr = json_files[0]
     with open(file_curr, 'r', encoding='utf-8') as f:
-        raw_curr = json.load(f)
+        raw_curr = filter_snapshot(json.load(f))
     raw_prev = {}
     if len(json_files) > 1:
         with open(json_files[1], 'r', encoding='utf-8') as f:
-            raw_prev = json.load(f)
+            raw_prev = filter_snapshot(json.load(f))
 
     validate_snapshot(raw_curr, raw_prev)
     warnings = snapshot_warnings(raw_curr, file_curr)

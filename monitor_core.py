@@ -7,6 +7,7 @@ from collections import Counter
 from pathlib import Path
 from bs4 import BeautifulSoup
 from promotion_noise import stable_text, is_error_title
+from monitor_exclusions import filter_snapshot
 
 MONITOR_VERSION = 4
 
@@ -221,6 +222,7 @@ def preserve_unavailable_fields(current, previous, previous_snapshot=''):
 
 def collection_warnings(data):
     """One actionable collection status per company; provenance stays in JSON."""
+    data = filter_snapshot(data)
     warnings = []
     labels = {'detail': '상세 수집 실패', 'main_content': '본문', 'notice': '유의사항', 'event_period': '기간'}
     for company, events in sorted(data.items()):
@@ -257,7 +259,8 @@ def successful_snapshot(data):
 
 
 def comparison_snapshots(current, previous):
-    current = successful_snapshot(current)
+    current = successful_snapshot(filter_snapshot(current))
+    previous = filter_snapshot(previous)
     return current, {company: events for company, events in previous.items() if company in current}
 
 
