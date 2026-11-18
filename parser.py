@@ -26,6 +26,7 @@ import time
 import glob
 import re
 import hashlib
+from pathlib import Path
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup, Comment
@@ -441,7 +442,7 @@ def _notice_source_link(changes):
     return ''
 
 
-def format_slack_report(total_change, event_details, notice_changes, warnings=None):
+def format_slack_report(total_change, event_details, notice_changes, warnings=None, notice_limit=SLACK_NOTICE_LIMIT):
     """Summarize changes for mobile Slack, without sending the full diff."""
     now_str = datetime.now(KST).strftime('%m/%d %H:%M')
     dashboard_url = os.getenv(
@@ -465,11 +466,11 @@ def format_slack_report(total_change, event_details, notice_changes, warnings=No
         if event_details:
             lines.append('')
             lines += event_details
-        for company, change in list(sorted(notice_changes.items()))[:SLACK_NOTICE_LIMIT]:
+        for company, change in list(sorted(notice_changes.items()))[:notice_limit]:
             summary = _short_notice_change(change)
             lines.append(f'• {company}: {summary}{_notice_source_link(change)}')
-        if len(notice_changes) > SLACK_NOTICE_LIMIT:
-            lines.append(f'  외 {len(notice_changes) - SLACK_NOTICE_LIMIT}개 회사 유의사항')
+        if len(notice_changes) > notice_limit:
+            lines.append(f'  외 {len(notice_changes) - notice_limit}개 회사 유의사항')
         if warnings:
             lines.append(
                 f'⚠️ 수집 점검 {len(warnings)}건 '
@@ -482,6 +483,37 @@ def format_slack_report(total_change, event_details, notice_changes, warnings=No
 
     lines += ['', f'대시보드: <{dashboard_url}|열기>']
     return '\n'.join(lines)
+
+
+def prepare_email_report(total_change, event_details, notice_changes, warnings=None):
+    """Prepare mail outside the checkout; delivery happens after data publication."""
+    report_dir = os.getenv('PROMOTION_MAIL_DIR')
+    if not report_dir:
+        print('메일 미리보기 생략: PROMOTION_MAIL_DIR 없음')
+        return
+    needed = bool(total_change or notice_changes or warnings)
+    stamp = datetime.now(KST).strftime('%m/%d %H:%M')
+    parts = []
+    if total_change:
+        parts.append(f'프로모션 {total_change}건 변동')
+    if notice_changes:
+        parts.append(f'유의사항 {len(notice_changes)}개 회사 변경')
+    if warnings:
+        parts.append(f'수집 점검 {len(warnings)}건')
+    subject = f'[프로모션] {stamp} ' + (' · '.join(parts) or '특이사항 없음')
+    # Mail can show every company; Slack's mobile preview is limited to three.
+    body = format_slack_report(total_change, event_details, notice_changes, warnings,
+                               notice_limit=len(notice_changes))
+    body = re.sub(r'<(https?://[^|>]+)\|([^>]+)>',
+                  lambda match: match[1] if match[2] == '열기' else f'{match[2]}: {match[1]}', body)
+    directory = Path(report_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / 'subject.txt').write_text(subject, encoding='utf-8')
+    (directory / 'body.txt').write_text(body + '\n', encoding='utf-8')
+    if os.getenv('GITHUB_OUTPUT'):
+        with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+            output.write('mail_needed=' + str(needed).lower() + '\n')
+    print('메일 본문 준비 완료' if needed else '변경 없음: 메일 발송 생략')
 
 
 def send_slack_report(total_change: int, event_details: list, notice_changes: dict, warnings=None):
@@ -622,15 +654,11 @@ def run_parser():
         safe_save(pd.DataFrame(columns=NOTICE_COLUMNS), "data/notices_latest.csv",
                   "data/notices_history.csv", NOTICE_COLUMNS)
 
-    # 이벤트 변경 + 유의사항 변경 분리 감지 → Slack
+    # 이벤트 변경 + 유의사항 변경 분리 감지 → 메일 본문 준비
     total_chg, _, event_details = calculate_changes(raw_curr, raw_prev)
     notice_changes = calculate_notice_changes(raw_curr, raw_prev)
-    send_slack_report(total_chg, event_details, notice_changes, warnings)
+    prepare_email_report(total_chg, event_details, notice_changes, warnings)
 
 
 if __name__ == "__main__":
     run_parser()
-
-
-
-

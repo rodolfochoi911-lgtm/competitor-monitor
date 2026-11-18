@@ -50,16 +50,14 @@ jobs:
 
     # ── Step 1: 크롤러 ────────────────────────────────────────────────
     - name: 1단계 - 크롤러 실행
-
-      env:
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      id: crawler
       run: python main.py
 
     # ── Step 2: 유의사항 정리 ─────────────────────────────────────────
     - name: 2단계 - 유의사항 정리 실행
-
+      id: parser
       env:
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        PROMOTION_MAIL_DIR: ${{ runner.temp }}/promotion-mail
       run: |
         if ls data/data_*.json 1>/dev/null 2>&1; then
           python parser.py
@@ -113,4 +111,33 @@ jobs:
         git checkout -f main
         git branch -D deploy-tmp
 
+    # 메일 장애가 수집 데이터 커밋/대시보드 배포를 막지 않도록 마지막에 전송한다.
+    - name: 프로모션 변경 메일 발송
+      if: ${{ always() && steps.parser.outcome == 'success' && steps.parser.outputs.mail_needed == 'true' }}
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 465
+        secure: true
+        username: ${{ secrets.MAIL_USERNAME }}
+        password: ${{ secrets.MAIL_APP_PASSWORD }}
+        subject: file://${{ runner.temp }}/promotion-mail/subject.txt
+        to: jiwonchoi@sk.com
+        from: Promotion Monitor
+        body: file://${{ runner.temp }}/promotion-mail/body.txt
 
+    - name: 프로모션 수집 실패 메일 발송
+      if: ${{ failure() && (steps.crawler.outcome == 'failure' || steps.parser.outcome == 'failure') }}
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 465
+        secure: true
+        username: ${{ secrets.MAIL_USERNAME }}
+        password: ${{ secrets.MAIL_APP_PASSWORD }}
+        subject: '[프로모션] 수집 또는 분석 실패'
+        to: jiwonchoi@sk.com
+        from: Promotion Monitor
+        body: |
+          프로모션 수집 또는 분석이 실패했습니다. 이번 실행의 데이터 갱신이 완료되지 않았습니다.
+          실행 로그: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
