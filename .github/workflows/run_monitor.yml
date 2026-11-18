@@ -1,9 +1,19 @@
 name: Daily Competitor Monitor
 on:
   schedule:
-    - cron: '45 18 * * *'   # KST 03:45 → 실제 약 06:07 예상
-    - cron: '49 0 * * *'    # KST 09:49 → 실제 약 15:12 예상
+    # Legacy fallback only. Disable with EXTERNAL_SCHEDULER_ENABLED=true after cutover.
+    - cron: '45 18 * * *'
+    - cron: '49 0 * * *'
   workflow_dispatch:
+    inputs:
+      scheduled_at:
+        description: 'Original scheduled time in ISO 8601 UTC (external scheduler)'
+        type: string
+        required: false
+      schedule_source:
+        description: 'Scheduler name for timing diagnostics'
+        type: string
+        required: false
 
 permissions:
   contents: write
@@ -14,6 +24,7 @@ concurrency:
 
 jobs:
   build:
+    if: ${{ github.event_name != 'schedule' || vars.EXTERNAL_SCHEDULER_ENABLED != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
 
@@ -33,6 +44,8 @@ jobs:
     - name: 예정 및 실제 실행 시각 기록
       env:
         SCHEDULE_CRON: ${{ github.event.schedule }}
+        SCHEDULED_AT: ${{ inputs.scheduled_at }}
+        SCHEDULE_SOURCE: ${{ inputs.schedule_source }}
       run: python scripts/run_timing.py
 
     # ── Step 1: 크롤러 ────────────────────────────────────────────────
@@ -99,4 +112,5 @@ jobs:
 
         git checkout -f main
         git branch -D deploy-tmp
+
 
