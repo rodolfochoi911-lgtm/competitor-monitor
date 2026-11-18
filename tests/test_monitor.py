@@ -170,7 +170,7 @@ class PromotionRegressionTests(unittest.TestCase):
                 Path('data/data_20261005_000000.json').write_text(json.dumps(previous), encoding='utf-8')
                 with patch.object(main, 'DATA_DIR', 'data'), patch.object(main, 'FILE_TIMESTAMP', '20261006_000000'), patch.object(main, 'setup_driver', return_value=Mock()), patch.object(main, 'crawl_site_logic', side_effect=crawl):
                     main.main()
-                with patch.object(parser, 'send_slack_report') as report:
+                with patch.object(parser, 'prepare_email_report') as report:
                     parser.run_parser()
                 for filename in ['dashboard_latest.csv', 'notices_latest.csv']:
                     df = pd.read_csv(Path('data', filename))
@@ -389,6 +389,3 @@ class PromotionRegressionTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-
-
-
