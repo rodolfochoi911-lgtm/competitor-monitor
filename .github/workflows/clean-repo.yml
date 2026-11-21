@@ -1,0 +1,22 @@
+name: Clean Git History
+on:
+  workflow_dispatch: # 수동 실행 버튼을 만드는 치트키
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run Clean Sync
+        run: |
+          git config --global user.email "mvno-monitor@test.com"
+          git config --global user.name "mvno-monitor"
+          git checkout --orphan temp_branch
+          git add -A
+          git commit -m "Fix: clear history for streamlit deployment"
+          git branch -D main
+          git branch -m main
+          git push -f origin main
