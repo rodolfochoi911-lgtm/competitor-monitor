@@ -1,0 +1,5 @@
+{
+  "스카이라이프": "RuntimeError: 스카이라이프 p1 이벤트 링크 0건 — 동적 로딩 또는 일시 응답 이상 가능성",
+  "헬로모바일": "RuntimeError: 목록 페이지 로드 실패: 헬로모바일 p1",
+  "SK 7세븐모바일": "RuntimeError: 상세 수집 실패: https://www.sk7mobile.com/bnef/event/eventIngView.do?cntId=d8d0bd5157c49e7015a261833f73e1b5 [TimeoutException: Message: timeout: Timed out receiving message from renderer: 29.497\n  (Session info: chrome=157.0.8103.0)\nStacktrace:\n#0 0x560671266caa <unknown>\n#1 0x560670b9acc5 <unknown>\n#2 0x560670b8ab32 <unknown>\n#3 0x560670b8a8a6 <unknown>\n#4 0x560670b8902b <unknown>\n#5 0x560670b8943f <unknown>\n#6 0x560670b949d6 <unknown>\n#7 0x560670ba5b90 <unknown>\n#8 0x560670bab99b <unknown>\n#9 0x560670b89d17 <unknown>\n#10 0x560670b89a38 <unknown>\n#11 0x560670ba5a53 <unknown>\n#12 0x560670c1c9fc <unknown>\n#13 0x560670bd7557 <unknown>\n#14 0x560670bd686e <unknown>\n#15 0x560670bd7341 <unknown>\n#16 0x56067122979c <unknown>\n#17 0x560671227fcd <unknown>\n#18 0x560671212df5 <unknown>\n#19 0x560671228c0a <unknown>\n#20 0x5606711fbb99 <unknown>\n#21 0x560671251318 <unknown>\n#22 0x5606712514b5 <unknown>\n#23 0x560671265633 <unknown>\n#24 0x7f9e0dc9cb64 <unknown>\n#25 0x7f9e0dd29e8c <unknown>\n]"
+}
