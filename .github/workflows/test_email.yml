@@ -1,0 +1,39 @@
+name: Test promotion email
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/test_email.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  send-test-email:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check mail configuration
+        env:
+          MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+          MAIL_APP_PASSWORD: ${{ secrets.MAIL_APP_PASSWORD }}
+        run: |
+          if [ -z "$MAIL_USERNAME" ] || [ -z "$MAIL_APP_PASSWORD" ]; then
+            echo '::error::Register MAIL_USERNAME and MAIL_APP_PASSWORD in this repository.'
+            exit 1
+          fi
+      - name: Send test email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_APP_PASSWORD }}
+          subject: '[프로모션] 메일 알림 연결 테스트'
+          to: jiwonchoi@sk.com
+          from: Promotion Monitor
+          body: |
+            프로모션 모니터링의 Gmail 발송 설정을 확인하는 테스트 메일입니다.
+            앞으로 프로모션·유의사항 변경 또는 수집 점검이 있을 때 이 주소로 안내합니다.
+            실행 확인: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
